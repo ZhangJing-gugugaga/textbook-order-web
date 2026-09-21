@@ -1,4 +1,22 @@
-logs/
+# 依赖与构建产物
 node_modules/
 dist/
+logs/
+
+# 本地覆盖与凭据文件（本项目 env 文件不含密钥：trial/school 配置按 SPEC §3 入库；
+# 以下为防御性条目，避免任何环境误提交真实凭据）
 .env.local
+.env.production
+.env.development
+.npmrc
+.pypirc
+.htpasswd
+id_rsa
+id_ed25519
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.log
+_vite.mock.config.bundled_*

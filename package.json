@@ -1,0 +1,51 @@
+{
+  "name": "textbook-order-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "教材征订系统 Web 端（MVP）—— Vue 3 + Vite 6 + Element Plus + Pinia + Vue Router",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:proxy": "vite --mode trial",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:trial": "vue-tsc --noEmit && vite build --mode trial",
+    "build:school": "vue-tsc --noEmit && vite build --mode school",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.0",
+    "element-plus": "^2.9.0",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "@typescript-eslint/parser": "^8.70.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@vue/test-utils": "^2.4.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-vue": "^10.0.0",
+    "globals": "^16.5.0",
+    "jsdom": "^26.0.0",
+    "mockjs": "^1.1.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.70.0",
+    "vite": "^6.0.0",
+    "vite-plugin-mock": "^3.0.2",
+    "vitest": "^3.2.0",
+    "vue-tsc": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

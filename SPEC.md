@@ -59,14 +59,15 @@ textbook-order-web/
 
 ## 3. 构建与环境（02 §2 · Q13）
 
-- 环境变量仅两项前端配置：`VITE_BASE`（部署子路径）、`VITE_PROXY_TARGET`（仅 dev 用代理目标）。**代码零域名/IP 硬编码**。
-- vite.config.ts：`base: process.env.VITE_BASE || '/'`；dev proxy `'/api' → VITE_PROXY_TARGET`；构建产物 `dist/`。
+- 环境变量仅两项前端配置：`VITE_BASE`（部署子路径）、`VITE_PROXY_TARGET`（仅 dev 用代理目标），另有一项开关 `VITE_MOCK`（是否挂 mock，默认按模式判定）。**代码零域名/IP 硬编码**。
+- vite.config.ts：`base: env.VITE_BASE || (mode==='development' ? '/' : '/textbook/')`；`useMock: env.VITE_MOCK ?? (mode==='development')`；dev proxy `'/api' → VITE_PROXY_TARGET`（仅非 mock 时启用）；构建产物 `dist/`。**显式 env 配置优先，未配置时按模式取默认值**。
+- 仓库不落 `.env` / `.env.development`（安全扫描敏感文件清单；本地开发无需 env 即可开箱运行），trial/school 配置入库（无密钥），样例见 `.env.example`。
 
-| 环境 | VITE_BASE | 说明 |
-|------|-----------|------|
-| local | `/` | vite dev + vite-plugin-mock（mock 挂 `/api` 前缀；契约冻结后 proxy 切 `VITE_PROXY_TARGET`，页面代码零改动，Q5） |
-| trial | `/textbook/` | moonzj.com 子路径，根域已有服务零冲突 |
-| school | `/textbook/`（按校方路径可调，仅改 env） | 移交重部署 |
+| 环境 | mode | VITE_BASE | 说明 |
+|------|------|-----------|------|
+| local | `development`（默认） | `/` | `npm run dev`；默认挂 vite-plugin-mock（mock 挂 `/api` 前缀；契约冻结后设 `VITE_MOCK=false` 并配 `VITE_PROXY_TARGET`，页面代码零改动，Q5）。**无需 env 文件** |
+| trial | `trial` | `/textbook/` | moonzj.com 子路径，根域已有服务零冲突（`.env.trial`） |
+| school | `school` | `/textbook/`（按校方路径可调，仅改 env） | 移交重部署（`.env.school`）；`npm run build` 默认即此路径 |
 
 - 生产 Nginx（部署手册交付物，02 §2 / §9 M5）：
 
@@ -203,3 +204,4 @@ location /api {
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | V1.0.0 | 2026-09-21 | 首版：基于 02 号文档 v3（16 问复审拍板）与本仓库 PRD V1.1.0 撰写 |
+| V1.0.1 | 2026-09-21 | §3 与环境对齐 MVP 实现：mode 取默认 base/mock（本地开发零 env 文件）、`.env` 不入库、`VITE_MOCK` 开关；落地说明与偏离记录见 02 号文档 §9.4 |
