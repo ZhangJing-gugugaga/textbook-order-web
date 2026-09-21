@@ -1,7 +1,30 @@
 /**
- * 全局常量：文案令牌（PRD 功能 7）、错误码（401 三类细分，M1 契约冻结后回填）、
- * 权限码提议值（SPEC §4，以后端 sys_permission 为准）。
+ * 全局常量：文案令牌（PRD 功能 7）、业务错误码（后端 ErrorCode 同源字符串令牌）、
+ * 权限码（后端 sys_permission 37 条 · M1 冻结）。
+ *
+ * 契约基准：后端 API.md V1.0.0 + 实测响应（联调基线 probe-baseline.json）。
  */
+
+/** 应用名（document.title 后缀、登录页品牌位） */
+export const APP_NAME = '教材征订系统'
+
+/** 列表分页尺寸档位（此前 10 处 `:page-sizes="[10, 20, 50]"` 各写一遍） */
+export const PAGE_SIZES = [10, 20, 50] as const
+
+/** 学号/工号格式（账号管理新建 + 登录页校验共用） */
+export const USER_NO_PATTERN = /^[A-Za-z0-9]{4,32}$/
+
+/** el-date-picker 值格式（学期窗口 / 学期生命周期共用） */
+export const DATETIME_FORMAT = 'YYYY-MM-DD HH:mm:ss'
+
+/** el-tag 语义类型 */
+export type TagType = 'primary' | 'success' | 'info' | 'warning' | 'danger'
+
+/** 状态元信息（标签文案 + 语义色），供表格与详情共用 */
+export interface StatusMeta {
+  label: string
+  type: TagType
+}
 
 /* ---------------- 文案令牌（PRD 功能 7 全局六类） ---------------- */
 export const COPY = {
@@ -9,49 +32,63 @@ export const COPY = {
   LOADING: '加载中…',
   SUCCESS: '操作成功',
   FAILED: '操作失败，请重试',
-  FORBIDDEN: '无权访问该页面',
+  FORBIDDEN: '无权执行该操作',
   NETWORK: '网络异常，请稍后重试',
-  SERVER_ERROR: '服务开小差了，请重试',
-  WINDOW_CLOSED: '本期征订已截止，提交未生效',
+  SERVER_ERROR: '服务开小差了，请稍后重试',
+  WINDOW_CLOSED: '本期征订已截止',
   LOGIN_EXPIRED: '登录已过期，请重新登录',
-  ROLE_CHANGED: '账号信息已变更，请重新登录',
   ACCOUNT_DISABLED: '账号已停用，请联系教材室',
   ACCOUNT_LOCKED: '账号已锁定，请稍后再试',
   BAD_CREDENTIAL: '账号或密码不正确',
+  FIRST_LOGIN_REQUIRED: '请先完成首登校验并修改初始密码',
 } as const
 
-/* ---------------- 业务错误码（提议值，M1 契约冻结后回填） ---------------- */
+/* ---------------- 业务错误码（后端 common/error/ErrorCode 同源） ---------------- */
 export const CODE = {
-  OK: 0,
-  /** access token 过期：静默 refresh 后重放 */
-  ACCESS_EXPIRED: 40101,
-  /** refresh 失效：强制登出 */
-  REFRESH_INVALID: 40102,
-  /** 角色版本失效：强制登出 */
-  ROLE_VERSION_INVALID: 40103,
+  OK: '0',
+  /* 400 */
+  PARAM_INVALID: 'PARAM_INVALID',
+  FIELD_CHECK_FAILED: 'FIELD_CHECK_FAILED',
+  FILE_TYPE_INVALID: 'FILE_TYPE_INVALID',
+  FILE_TOO_LARGE: 'FILE_TOO_LARGE',
+  CONFIG_VALUE_INVALID: 'CONFIG_VALUE_INVALID',
+  BOOK_DELISTED: 'BOOK_DELISTED',
+  PASSWORD_POLICY: 'PASSWORD_POLICY',
+  /* 401 三类语义（契约冻结项） */
+  UNAUTHORIZED: 'UNAUTHORIZED',
+  /** access 过期：静默 refresh 后重放 */
+  TOKEN_EXPIRED: 'TOKEN_EXPIRED',
+  TOKEN_INVALID: 'TOKEN_INVALID',
+  /** refresh 失效 / 角色版本失效：强制登出 */
+  REFRESH_INVALID: 'REFRESH_INVALID',
   /** 账号停用：强制登出 */
-  ACCOUNT_DISABLED: 40104,
-  /** 无权限 */
-  FORBIDDEN: 40300,
-  /** 关窗瞬间提交 */
-  WINDOW_CLOSED: 40901,
-  /** 字段审查未通过（data.errors 为 FieldCheckItem[]） */
-  FIELD_CHECK_FAILED: 42200,
+  ACCOUNT_DISABLED: 'ACCOUNT_DISABLED',
+  LOGIN_FAILED: 'LOGIN_FAILED',
+  ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
+  FIRST_LOGIN_VERIFY_FAILED: 'FIRST_LOGIN_VERIFY_FAILED',
+  /* 403 */
+  FORBIDDEN: 'FORBIDDEN',
+  RESOURCE_FORBIDDEN: 'RESOURCE_FORBIDDEN',
+  /** 首登拦截：跳首登引导页（不跳登录页） */
+  FIRST_LOGIN_REQUIRED: 'FIRST_LOGIN_REQUIRED',
+  /* 404 */
+  NOT_FOUND: 'NOT_FOUND',
+  /* 409 */
+  WINDOW_CLOSED: 'WINDOW_CLOSED',
+  WINDOW_NOT_OPEN: 'WINDOW_NOT_OPEN',
+  CORRECTION_EXPIRED: 'CORRECTION_EXPIRED',
+  STATE_CONFLICT: 'STATE_CONFLICT',
+  NOTICE_TASK_EXISTS: 'NOTICE_TASK_EXISTS',
+  /* 410 */
+  DOWNLOAD_TOKEN_INVALID: 'DOWNLOAD_TOKEN_INVALID',
+  /* 429 */
+  RATE_LIMITED: 'RATE_LIMITED',
+  /* 500 */
+  SERVER_ERROR: 'SERVER_ERROR',
 } as const
 
-/** 导出阈值：≤5000 行同步下载，>5000 行建 export_task（Q16） */
+/** 导出阈值默认值（真源为 system_config.export.sync_row_threshold） */
 export const EXPORT_SYNC_MAX_ROWS = 5000
-
-/**
- * 导出分流判定（SPEC §8 / Q16）：
- * 预估行数超过阈值走异步导出任务，否则同步下载。
- */
-export function shouldUseAsyncExport(
-  estimatedRows: number,
-  threshold = EXPORT_SYNC_MAX_ROWS,
-): boolean {
-  return estimatedRows > threshold
-}
 
 /** 轮询参数（SPEC §7 task store：2s 起步、退避至上限 10s） */
 export const POLL_INTERVAL_START = 2000
@@ -60,63 +97,195 @@ export const POLL_INTERVAL_MAX = 10000
 /** 窗口状态轮询间隔 */
 export const WINDOW_POLL_INTERVAL = 60000
 
-/* ---------------- 权限码提议值（SPEC §4） ---------------- */
-export const PERMISSIONS = {
-  DASHBOARD_VIEW: 'dashboard:view',
-  USER_MANAGE: 'sys:user:manage',
-  ORG_MANAGE: 'org:manage',
-  SEMESTER_MANAGE: 'semester:manage',
-  TEXTBOOK_MANAGE: 'textbook:manage',
-  COURSE_MANAGE: 'course:manage',
-  PEOPLE_MANAGE: 'people:manage',
-  CHANGE_APPROVE: 'change:approve',
-  REVIEW_FORM: 'review:form',
-  ORDER_DATA_VIEW: 'data:order:view',
-  EXPORT_CENTER: 'export:center',
-  NOTICE_TASK_MANAGE: 'notice:task:manage',
-  COLLEGE_DATA_VIEW: 'data:college:view',
-  COLLEGE_EXPORT: 'export:college',
-  WINDOW_VIEW: 'window:view',
-  CHANGE_SUBMIT: 'change:submit',
-  ORDER_FORM_VIEW: 'order:form:view',
-  ORDER_FORM_FILL: 'order:form:fill',
-  STUDENT_ORDER_FILL: 'student:order:fill',
-  STUDENT_ORDER_VIEW: 'student:order:view',
-  SUPPLIER_LIST_VIEW: 'supplier:list:view',
-  SUPPLIER_EXPORT: 'supplier:export',
+/** system_config 8 键（后端 §3.12，键名即真源） */
+export const CONFIG_KEYS = {
+  NOTICE_ROUND_LIMIT: 'notice.round_limit',
+  NOTICE_INTERVAL_HOURS: 'notice.interval_hours',
+  NOTICE_POPUP_QUEUE_MAX: 'notice.popup_queue_max',
+  ORDER_QUANTITY_MAX_DEFAULT: 'order.quantity.max_default',
+  ORDER_CORRECT_WINDOW_DAYS: 'order.correct_window_days',
+  EXPORT_SYNC_ROW_THRESHOLD: 'export.sync_row_threshold',
+  EXPORT_DOWNLOAD_TOKEN_MINUTES: 'export.download_token_minutes',
+  IMPORT_MAX_FILE_MB: 'import.max_file_mb',
 } as const
 
-/** 角色 → 权限码映射（仅用于本地 mock 种子数据；真实权限码以后端 sys_permission 为准） */
-export const ROLE_PERMISSIONS: Record<string, string[]> = {
-  admin: [
-    PERMISSIONS.DASHBOARD_VIEW,
-    PERMISSIONS.USER_MANAGE,
-    PERMISSIONS.ORG_MANAGE,
-    PERMISSIONS.SEMESTER_MANAGE,
-    PERMISSIONS.TEXTBOOK_MANAGE,
-    PERMISSIONS.COURSE_MANAGE,
-    PERMISSIONS.PEOPLE_MANAGE,
-    PERMISSIONS.CHANGE_APPROVE,
-    PERMISSIONS.REVIEW_FORM,
-    PERMISSIONS.ORDER_DATA_VIEW,
-    PERMISSIONS.EXPORT_CENTER,
-    PERMISSIONS.NOTICE_TASK_MANAGE,
-  ],
-  secretary: [
-    PERMISSIONS.COLLEGE_DATA_VIEW,
-    PERMISSIONS.COLLEGE_EXPORT,
-    PERMISSIONS.WINDOW_VIEW,
-    PERMISSIONS.CHANGE_SUBMIT,
-  ],
-  teacher: [PERMISSIONS.ORDER_FORM_VIEW, PERMISSIONS.ORDER_FORM_FILL, PERMISSIONS.CHANGE_SUBMIT],
-  student: [PERMISSIONS.STUDENT_ORDER_FILL, PERMISSIONS.STUDENT_ORDER_VIEW],
-  supplier: [PERMISSIONS.SUPPLIER_LIST_VIEW, PERMISSIONS.SUPPLIER_EXPORT],
-}
+/* ---------------- 权限码（后端 sys_permission 37 条 · M1 冻结） ---------------- */
+export const PERMISSIONS = {
+  // semester
+  SEMESTER_MANAGE: 'semester:semester:manage',
+  SEMESTER_ACTIVATE: 'semester:semester:activate',
+  WINDOW_MANAGE: 'semester:window:manage',
+  WINDOW_VIEW: 'semester:window:view',
+  // account
+  USER_MANAGE: 'user:account:manage',
+  USER_RESET: 'user:account:reset',
+  // org
+  ORG_COLLEGE_MANAGE: 'org:college:manage',
+  ORG_MAJOR_MANAGE: 'org:major:manage',
+  ORG_CLASS_MANAGE: 'org:class:manage',
+  // textbook
+  TEXTBOOK_MANAGE: 'textbook:book:manage',
+  TEXTBOOK_IMPORT: 'textbook:book:import',
+  // course
+  COURSE_MANAGE: 'course:course:manage',
+  TEACHER_COURSE_MANAGE: 'course:teacher:manage',
+  // people
+  STUDENT_IMPORT: 'people:student:import',
+  TEACHER_IMPORT: 'people:teacher:import',
+  // import batch
+  IMPORT_BATCH_VIEW: 'import:batch:view',
+  // 教师征订
+  ORDER_FORM_SUBMIT: 'order:form:submit',
+  ORDER_FORM_VIEW_SELF: 'order:form:view:self',
+  ORDER_FORM_VIEW_COLLEGE: 'order:form:view:college',
+  ORDER_FORM_VIEW_ALL: 'order:form:view:all',
+  ORDER_FORM_REVIEW: 'order:form:review',
+  // 学生选购
+  STUDENT_ORDER_SUBMIT: 'student:order:submit',
+  STUDENT_ORDER_VIEW_SELF: 'student:order:view:self',
+  STUDENT_ORDER_VIEW_ALL: 'student:order:view:all',
+  // 异动
+  CHANGE_SUBMIT: 'change:request:submit',
+  CHANGE_REVIEW: 'change:request:review',
+  // 导出
+  EXPORT_ORDER: 'export:order:create',
+  EXPORT_SIGNATURE: 'export:signature:create',
+  EXPORT_STUDENT: 'export:student:create',
+  EXPORT_NOTICE: 'export:notice:create',
+  // 通知
+  NOTICE_TASK_MANAGE: 'notice:task:manage',
+  NOTICE_TASK_VIEW: 'notice:task:view',
+  // 配置 / 审计 / 看板
+  CONFIG_MANAGE: 'config:config:manage',
+  AUDIT_VIEW: 'audit:log:view',
+  DASHBOARD_VIEW: 'dashboard:stat:view',
+  // 供货商（物理隔离）
+  SUPPLIER_ORDER_VIEW: 'supplier:order:view',
+  SUPPLIER_ORDER_EXPORT: 'supplier:order:export',
+} as const
+
+/** 角色码（后端 sys_role.role_code，大写） */
+export const ROLES = {
+  ADMIN: 'ADMIN',
+  SECRETARY: 'SECRETARY',
+  TEACHER: 'TEACHER',
+  STUDENT: 'STUDENT',
+  SUPPLIER: 'SUPPLIER',
+} as const
 
 export const ROLE_LABELS: Record<string, string> = {
-  admin: '教材室（超级管理员）',
-  secretary: '学院秘书',
-  teacher: '任课老师',
-  student: '学生',
-  supplier: '教材供货商',
+  ADMIN: '教材室（超级管理员）',
+  SECRETARY: '学院秘书',
+  TEACHER: '任课教师',
+  STUDENT: '学生',
+  SUPPLIER: '教材供货商',
 }
+
+/** 教师征订单状态（后端 §1.7） */
+export const ORDER_FORM_STATUS = {
+  draft: '草稿',
+  pending_review: '待审核',
+  reviewed: '已通过',
+  rejected: '已驳回',
+  rejected_auto: '字段审查未过',
+  submitted: '已提交',
+} as const
+
+/** 学生选购单状态 */
+export const STUDENT_ORDER_STATUS = {
+  draft: '草稿',
+  submitted: '已提交',
+} as const
+
+/** 异动状态 */
+export const CHANGE_STATUS = {
+  pending_field_check: '字段审查中',
+  pending_review: '待审批',
+  approved: '已通过',
+  rejected: '已驳回',
+} as const
+
+/** 异动类型 */
+export const CHANGE_TYPE_LABELS: Record<string, string> = {
+  student: '学生异动',
+  teacher: '教师异动',
+}
+
+/**
+ * 状态 → 标签（文案 + 语义色）。
+ * 文案一律从上面的状态字典取，保证「一处改文案、处处生效」；
+ * 此前 ReviewView / MySubmissionsView 各写一份 STATUS_META，
+ * PeopleView / ChangeRequestsView 各写一份异动映射，文案已出现漂移。
+ */
+export const ORDER_FORM_STATUS_META: Record<string, StatusMeta> = {
+  draft: { label: ORDER_FORM_STATUS.draft, type: 'info' },
+  pending_review: { label: ORDER_FORM_STATUS.pending_review, type: 'warning' },
+  reviewed: { label: ORDER_FORM_STATUS.reviewed, type: 'success' },
+  rejected: { label: ORDER_FORM_STATUS.rejected, type: 'danger' },
+  rejected_auto: { label: ORDER_FORM_STATUS.rejected_auto, type: 'danger' },
+  submitted: { label: ORDER_FORM_STATUS.submitted, type: 'info' },
+}
+
+export const STUDENT_ORDER_STATUS_META: Record<string, StatusMeta> = {
+  draft: { label: STUDENT_ORDER_STATUS.draft, type: 'info' },
+  submitted: { label: STUDENT_ORDER_STATUS.submitted, type: 'success' },
+}
+
+export const CHANGE_STATUS_META: Record<string, StatusMeta> = {
+  pending_field_check: { label: CHANGE_STATUS.pending_field_check, type: 'info' },
+  pending_review: { label: CHANGE_STATUS.pending_review, type: 'warning' },
+  approved: { label: CHANGE_STATUS.approved, type: 'success' },
+  rejected: { label: CHANGE_STATUS.rejected, type: 'danger' },
+}
+
+/** 通知来源（通知管理页与全局阻塞弹窗共用） */
+export const NOTICE_SOURCE_LABELS: Record<string, string> = {
+  system_window_change: '系统（窗口变更）',
+  manual: '教材室',
+}
+
+/** 未知状态兜底：原样回显后端码值 */
+export function statusMetaOf(
+  dict: Record<string, StatusMeta>,
+  status: string | undefined,
+): StatusMeta {
+  if (!status) return { label: '—', type: 'info' }
+  return dict[status] ?? { label: status, type: 'info' }
+}
+
+/** 导入批次状态 */
+export const BATCH_STATUS = {
+  running: '处理中',
+  done: '已完成',
+  failed: '已失败',
+} as const
+
+/** 导出任务状态 */
+export const EXPORT_TASK_STATUS = {
+  queued: '排队中',
+  running: '导出中',
+  done: '已完成',
+  failed: '已失败',
+  expired: '已过期',
+} as const
+
+/** 窗口三态 */
+export const WINDOW_STATUS = {
+  not_open: '未开始',
+  open: '进行中',
+  closed: '已截止',
+} as const
+
+/** 学期生命周期 */
+export const SEMESTER_ACTIVE_STATUS = {
+  draft: '可导入',
+  active: '当前学期',
+  archived: '已归档',
+} as const
+
+/** 通知发送状态 */
+export const SEND_STATUS = {
+  sent: '已发送',
+  unauthorized: '未授权',
+  failed: '失败',
+} as const

@@ -3,6 +3,13 @@ node_modules/
 dist/
 logs/
 
+# 测试与质量工具产物
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
 # 本地覆盖与凭据文件（本项目 env 文件不含密钥：trial/school 配置按 SPEC §3 入库；
 # 以下为防御性条目，避免任何环境误提交真实凭据）
 .env.local
@@ -19,4 +26,4 @@ id_ed25519
 .idea/
 .vscode/
 *.log
-_vite.mock.config.bundled_*
+.vite/

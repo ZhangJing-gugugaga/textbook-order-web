@@ -1,110 +1,70 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { storeToRefs } from 'pinia'
-import { semesterApi } from '@/api/semester'
+import { onMounted } from 'vue'
 import { useWindowStore } from '@/stores/window'
-import { formatDateTime, windowStatusText } from '@/utils/format'
-import type { Semester, WindowChangeRecord } from '@/types'
+import { formatDateTime } from '@/utils/format'
+import { WINDOW_STATUS } from '@/utils/constants'
 
-/** 窗口状态（秘书）：本院窗口只读视图 */
+/**
+ * 窗口状态（秘书，只读 / API.md §3.2）：
+ * 秘书仅有 semester:window:view，故只消费 GET /api/semester/window/status
+ * （学期列表与窗口变更记录属超管权限，秘书端不展示）。
+ * 倒计时以服务端 serverTime 为准，不信任本地时钟。
+ */
 const windowStore = useWindowStore()
-const { status } = storeToRefs(windowStore)
-
-const semester = ref<Semester | null>(null)
-const changes = ref<WindowChangeRecord[]>([])
-
-const text = computed(() =>
-  windowStatusText(status.value, windowStore.remainMs, windowStore.startRemainMs),
-)
-
-async function load() {
-  try {
-    const list = await semesterApi.list()
-    semester.value = list.find((item) => item.status === 'active') ?? list[0] ?? null
-    if (semester.value) changes.value = await semesterApi.changes(semester.value.id)
-  } catch {
-    semester.value = null
-  }
-}
 
 onMounted(() => {
   void windowStore.fetch()
-  void load()
+  windowStore.startPolling()
 })
 </script>
 
 <template>
   <div class="app-page">
-    <h3 class="mb-16">当前窗口状态（只读）</h3>
+    <div class="flex-between mb-16">
+      <h3>当前窗口状态（只读）</h3>
+      <el-button size="small" @click="windowStore.fetch()">刷新</el-button>
+    </div>
 
+    <!-- 窗口三态横幅由全局 WindowBanner 统一渲染，本页只展示明细 -->
     <el-descriptions :column="2" border>
-      <el-descriptions-item label="当前学期">{{ semester?.name || '—' }}</el-descriptions-item>
+      <el-descriptions-item label="当前学期">
+        {{ windowStore.semesterName || '未设置 active 学期' }}
+      </el-descriptions-item>
       <el-descriptions-item label="窗口状态">
-        <el-tag :type="status === 'open' ? 'success' : status === 'closed' ? 'warning' : 'info'">
-          {{ status === 'open' ? '进行中' : status === 'closed' ? '已截止' : '未开始' }}
+        <el-tag
+          :type="
+            windowStore.status === 'open'
+              ? 'success'
+              : windowStore.status === 'closed'
+                ? 'warning'
+                : 'info'
+          "
+        >
+          {{ WINDOW_STATUS[windowStore.status] ?? windowStore.status }}
         </el-tag>
       </el-descriptions-item>
       <el-descriptions-item label="窗口开始">
-        {{ semester?.windowStart ? formatDateTime(semester.windowStart) : '—' }}
+        {{ formatDateTime(windowStore.windowStart) }}
       </el-descriptions-item>
       <el-descriptions-item label="窗口截止">
-        {{ semester?.windowEnd ? formatDateTime(semester.windowEnd) : '—' }}
+        {{ formatDateTime(windowStore.windowEnd) }}
       </el-descriptions-item>
-      <el-descriptions-item label="状态说明" :span="2">{{ text }}</el-descriptions-item>
-      <el-descriptions-item label="自动开启">
-        <el-tag size="small" :type="semester?.autoOpen ? 'success' : 'info'">
-          {{ semester?.autoOpen ? '已开启' : '未开启' }}
+      <el-descriptions-item label="学生选购通道">
+        <el-tag :type="windowStore.channelOpen === 1 ? 'success' : 'info'" size="small">
+          {{ windowStore.channelOpen === 1 ? '开放' : '关闭' }}
         </el-tag>
       </el-descriptions-item>
-      <el-descriptions-item label="自动截止">
-        <el-tag size="small" :type="semester?.autoClose ? 'success' : 'info'">
-          {{ semester?.autoClose ? '已开启' : '未开启' }}
-        </el-tag>
+      <el-descriptions-item label="服务器时间">
+        {{ formatDateTime(windowStore.serverTime) }}
       </el-descriptions-item>
     </el-descriptions>
 
     <el-alert
       class="mt-16"
-      :title="
-        status === 'open'
-          ? '窗口开放中：本院教师可填报教材需求'
-          : status === 'closed'
-            ? '本期征订已截止，可查看历史记录'
-            : '窗口尚未开始'
-      "
-      :type="status === 'open' ? 'success' : status === 'closed' ? 'warning' : 'info'"
+      title="窗口的开启、截止与延长由教材室操作，变更会自动通知全员；本页仅供查看。"
+      type="info"
       :closable="false"
       show-icon
     />
-
-    <h4 class="mt-16">窗口变更记录</h4>
-    <el-table :data="changes" size="small" border stripe>
-      <el-table-column type="index" label="#" width="60" />
-      <el-table-column label="操作" width="130">
-        <template #default="{ row }">
-          {{
-            row.action === 'open'
-              ? '开启窗口'
-              : row.action === 'close'
-                ? '截止窗口'
-                : row.action === 'extend'
-                  ? '延长窗口'
-                  : row.action === 'activate'
-                    ? '激活学期'
-                    : '归档学期'
-          }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="operatorName" label="操作人" width="120" />
-      <el-table-column label="时间" width="180">
-        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
-      </el-table-column>
-      <el-table-column label="原值 → 新值" min-width="220">
-        <template #default="{ row }">
-          {{ row.fromValue || '—' }} → {{ row.toValue || '—' }}
-        </template>
-      </el-table-column>
-    </el-table>
-    <el-empty v-if="changes.length === 0" description="暂无变更记录" :image-size="70" />
   </div>
 </template>

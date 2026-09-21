@@ -1,68 +1,57 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { orderFormApi } from '@/api/orderForm'
-import { exportTaskApi } from '@/api/exportTask'
+import { onMounted, reactive, ref } from 'vue'
+
+import { reviewApi } from '@/api/orderForm'
+import { noticeApi } from '@/api/notice'
+import { exportApi } from '@/api/exportTask'
+import { ApiError } from '@/api/http'
+import { orgApi } from '@/api/semester'
 import ExportButton from '@/components/ExportButton.vue'
-import { triggerBrowserDownload } from '@/api/http'
-import { COPY } from '@/utils/constants'
+import ServerTable from '@/components/ServerTable.vue'
+import { COPY, PERMISSIONS } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
-import type { OrderForm } from '@/types'
+import type { College, NoticeTask } from '@/types'
 
 /**
- * 导出中心（PRD 教材室-导出中心 / 02 §6.2 Q16）：
- * 全院征订明细、通知汇总等多维度组合导出；
- * ≤5000 行同步下载，>5000 行建 export_task + 轮询 + 一次性授权下载链接。
+ * 导出中心（PRD 教材室-导出中心 / API.md §3.10）：
+ * 三类超管导出（教师征订明细 / 学生选购汇总 / 通知汇总）。
+ * 同步/异步由后端 export.sync_row_threshold 裁决，前端不预估行数：
+ * xlsx 流直接下载；JSON 则建任务 → 轮询 → 一次性 token 下载。
  */
-const activeTab = ref<'order' | 'notice' | 'student'>('order')
+const activeTab = ref<'order' | 'notice'>('order')
+const colleges = ref<College[]>([])
+const selectedCollegeId = ref<number | undefined>(undefined)
 
 /* ---------------- 全院征订明细 ---------------- */
-const orderQuery = ref<{ status: string; keyword: string; page: number; size: number }>({
-  status: '',
-  keyword: '',
-  page: 1,
-  size: 10,
-})
-const orderRows = ref<OrderForm[]>([])
-const orderTotal = ref(0)
-const orderLoading = ref(false)
+const orderFilters = reactive({ status: '', teacherName: '' })
+const orderTableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
 
-async function loadOrders() {
-  orderLoading.value = true
-  try {
-    const result = await orderFormApi.page({
-      status: orderQuery.value.status || undefined,
-      keyword: orderQuery.value.keyword || undefined,
-      page: orderQuery.value.page,
-      size: orderQuery.value.size,
-    })
-    orderRows.value = result.list
-    orderTotal.value = result.total
-  } catch {
-    orderRows.value = []
-    orderTotal.value = 0
-  } finally {
-    orderLoading.value = false
-  }
+/** 筛选条件 → 接口参数（空串不下发），分页由 ServerTable 注入 */
+function fetchOrders({ page, size }: { page: number; size: number }) {
+  return reviewApi.page({
+    status: orderFilters.status || undefined,
+    collegeId: selectedCollegeId.value,
+    teacherName: orderFilters.teacherName || undefined,
+    page,
+    size,
+  })
 }
 
 function searchOrders() {
-  orderQuery.value.page = 1
-  void loadOrders()
+  orderTableRef.value?.reload()
 }
 
 /* ---------------- 通知汇总 ---------------- */
-const noticeRows = ref<Record<string, unknown>[]>([])
+const noticeTasks = ref<NoticeTask[]>([])
 const noticeLoading = ref(false)
 
 async function loadNotices() {
   noticeLoading.value = true
   try {
-    const { noticeApi } = await import('@/api/notice')
-    const tasks = await noticeApi.tasks()
-    noticeRows.value = tasks as unknown as Record<string, unknown>[]
-  } catch {
-    noticeRows.value = []
+    noticeTasks.value = await noticeApi.tasks()
+  } catch (error) {
+    noticeTasks.value = []
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
     noticeLoading.value = false
   }
@@ -70,75 +59,76 @@ async function loadNotices() {
 
 const exportTypes = [
   {
-    key: 'order-detail',
-    name: '全院征订明细',
-    desc: '教师表单全量明细：课程 × 班级 × 教材 × 数量，含审查状态',
-    estimatedRows: 100,
+    key: 'order',
+    name: '教师征订明细',
+    desc: '教师表单全量明细：课程 × 班级 × 教材 × 数量，含审查状态；可按学院筛选',
+    code: PERMISSIONS.EXPORT_ORDER,
+    run: () => exportApi.orders({ collegeId: selectedCollegeId.value }),
   },
   {
-    key: 'college-summary',
-    name: '各学院汇总',
-    desc: '按学院统计提交进度、复核情况与学生选购完成度',
-    estimatedRows: 10,
+    key: 'student',
+    name: '学生选购汇总',
+    desc: '参考用量汇总：学院 / 班级 / ISBN / 书名 / 学生数 / 数量合计',
+    code: PERMISSIONS.EXPORT_STUDENT,
+    run: () => exportApi.students({}),
   },
   {
-    key: 'student-order',
-    name: '学生选购明细',
-    desc: '学生选购全量记录（含班级、品种、金额）',
-    estimatedRows: 100,
-  },
-  {
-    key: 'notice-summary',
-    name: '通知确认汇总',
-    desc: '通知任务发送/确认/失败名单汇总',
-    estimatedRows: 20,
-  },
-  {
-    key: 'supplier-sheet',
-    name: '供货商订购清单（分学院 sheet）',
-    desc: '仅 书名/ISBN/教师姓名/学院 四类字段，一个学院一个 sheet',
-    estimatedRows: 100,
+    key: 'notice',
+    name: '通知汇总',
+    desc: '通知任务各轮发送时间/状态、确认状态/时间，含未授权线下兜底名单',
+    code: PERMISSIONS.EXPORT_NOTICE,
+    run: () => {
+      if (!noticeTasks.value.length) {
+        ElMessage.warning('本学期暂无通知任务，无法导出通知汇总')
+        return Promise.reject(
+          new ApiError('本学期暂无通知任务，无法导出通知汇总', 'NO_NOTICE_TASK'),
+        )
+      }
+      return exportApi.notice({ taskId: noticeTasks.value[0].id })
+    },
   },
 ]
 
-async function downloadExport(item: (typeof exportTypes)[number]) {
-  try {
-    const blob = await exportTaskApi.syncDownload({
-      name: item.name,
-      params: { type: item.key },
-    })
-    triggerBrowserDownload(blob, `${item.name}.xlsx`)
-    ElMessage.success('已下载，导出行为已记录')
-  } catch {
-    ElMessage.error('导出失败请重试')
-  }
-}
-
-loadOrders()
-loadNotices()
+onMounted(async () => {
+  colleges.value = await orgApi.colleges().catch(() => [])
+  // 征订明细由 ServerTable 自行首屏取数，这里只加载通知任务（导出按钮依赖）
+  await loadNotices()
+})
 </script>
 
 <template>
   <div class="app-page">
-    <h3 class="mb-16">导出类型</h3>
+    <div class="flex-between mb-16">
+      <h3>导出中心</h3>
+      <el-select
+        v-model="selectedCollegeId"
+        clearable
+        placeholder="全部学院（征订明细可按学院导出）"
+        style="width: 300px"
+        @change="searchOrders"
+      >
+        <el-option
+          v-for="college in colleges"
+          :key="college.id"
+          :label="college.name"
+          :value="college.id"
+        />
+      </el-select>
+    </div>
+
     <div class="export-grid">
       <div v-for="item in exportTypes" :key="item.key" class="export-card">
         <div class="export-name">{{ item.name }}</div>
         <div class="export-desc">{{ item.desc }}</div>
         <div class="flex-between mt-8">
-          <span class="text-muted">预估 {{ item.estimatedRows }} 行</span>
-          <ExportButton
-            :name="item.name"
-            :estimated-rows="item.estimatedRows"
-            :params="{ type: item.key }"
-            size="small"
-          />
+          <span class="text-muted">服务端裁决同步/异步</span>
+          <ExportButton :name="item.name" :code="item.code" :exporter="item.run" size="small" />
         </div>
       </div>
     </div>
     <el-alert
       class="mt-16"
-      title="预估 ≤5000 行同步下载；>5000 行创建异步导出任务，完成后通过一次性授权链接下载。每次导出后端均审计留痕。"
+      title="行数 ≤ 阈值（默认 5000）同步下载 xlsx；超过则创建异步导出任务，完成后通过一次性授权链接自动下载。每次导出后端均审计留痕。"
       type="info"
       :closable="false"
       show-icon
@@ -148,66 +138,58 @@ loadNotices()
       <el-tab-pane label="全院征订明细" name="order">
         <div class="app-toolbar">
           <el-select
-            v-model="orderQuery.status"
+            v-model="orderFilters.status"
             clearable
             placeholder="审查状态"
-            style="width: 160px"
+            style="width: 170px"
             @change="searchOrders"
           >
-            <el-option label="待复核" value="pending_review" />
-            <el-option label="已复核" value="reviewed" />
+            <el-option label="待审核" value="pending_review" />
+            <el-option label="已通过" value="reviewed" />
             <el-option label="已驳回" value="rejected" />
           </el-select>
           <el-input
-            v-model="orderQuery.keyword"
-            placeholder="教师 / 课程 / 教材"
+            v-model="orderFilters.teacherName"
+            placeholder="教师姓名"
             clearable
-            style="width: 220px"
+            style="width: 180px"
             @keyup.enter="searchOrders"
             @clear="searchOrders"
           />
           <el-button type="primary" @click="searchOrders">查询</el-button>
-          <el-button @click="downloadExport(exportTypes[0])">直接下载</el-button>
         </div>
-        <el-table v-loading="orderLoading" :data="orderRows" border stripe>
+        <ServerTable ref="orderTableRef" :fetcher="fetchOrders">
           <el-table-column prop="id" label="表单号" width="90" />
           <el-table-column prop="teacherName" label="任课教师" width="120" />
           <el-table-column prop="collegeName" label="学院" min-width="140" />
-          <el-table-column label="明细行数" width="100" align="center">
-            <template #default="{ row }">{{ row.items.length }}</template>
-          </el-table-column>
+          <el-table-column prop="itemCount" label="明细行数" width="100" align="center" />
+          <el-table-column prop="totalQuantity" label="数量合计" width="100" align="center" />
           <el-table-column label="提交时间" width="170">
-            <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+            <template #default="{ row }">{{ formatDateTime(row.submittedAt) }}</template>
           </el-table-column>
-        </el-table>
-        <div class="app-pagination">
-          <el-pagination
-            v-model:current-page="orderQuery.page"
-            v-model:page-size="orderQuery.size"
-            :total="orderTotal"
-            :page-sizes="[10, 20, 50]"
-            layout="total, sizes, prev, pager, next"
-            background
-            @current-change="loadOrders"
-            @size-change="searchOrders"
-          />
-        </div>
+        </ServerTable>
       </el-tab-pane>
 
       <el-tab-pane label="通知汇总" name="notice">
-        <el-table v-loading="noticeLoading" :data="noticeRows" border stripe>
+        <el-table v-loading="noticeLoading" :data="noticeTasks" border stripe>
           <el-table-column prop="id" label="任务号" width="90" />
-          <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
-          <el-table-column prop="totalCount" label="应发送" width="100" align="center" />
-          <el-table-column prop="sentCount" label="已发送" width="100" align="center" />
-          <el-table-column prop="confirmedCount" label="已确认" width="100" align="center" />
-          <el-table-column prop="failedCount" label="失败" width="90" align="center" />
+          <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="targetRoles" label="发送对象" width="140" />
+          <el-table-column prop="roundLimit" label="重发上限" width="110" align="center" />
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.status === 'active' ? 'warning' : 'info'">
+                {{ row.status === 'active' ? '进行中' : '已关闭' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="170">
+            <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+          </el-table-column>
+          <template #empty>
+            <el-empty :description="COPY.EMPTY" :image-size="70" />
+          </template>
         </el-table>
-        <el-empty
-          v-if="!noticeLoading && noticeRows.length === 0"
-          :description="COPY.EMPTY"
-          :image-size="70"
-        />
       </el-tab-pane>
     </el-tabs>
   </div>

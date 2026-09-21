@@ -1,36 +1,39 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+
 import { changeApi } from '@/api/change'
-import ImportWizard from '@/components/ImportWizard.vue'
-import BatchProgressDrawer from '@/components/BatchProgressDrawer.vue'
 import FieldCheckResult from '@/components/FieldCheckResult.vue'
-import { COPY } from '@/utils/constants'
-import type { ChangeRequest, ImportBatch } from '@/types'
+import { useConfigStore } from '@/stores/config'
+import { CHANGE_STATUS_META, COPY, statusMetaOf } from '@/utils/constants'
+import { formatDateTime } from '@/utils/format'
+import type { ChangeImportResult, ChangeRequest } from '@/types'
 
 /**
- * 异动申请（PRD 学院秘书-异动申请 / 02 §6.3 Q10）：
- * 逐条或 Excel 提交学生异动，查看两级审批进度。
- * Excel 一律生成批量 change_request 走两级审查，页面不出现"直接生效"路径。
+ * 异动申请（PRD 学院秘书-异动申请 / API.md §3.8）：
+ * 逐条（POST /api/secretary/change）或 Excel 批量（POST /api/secretary/change/import）提交，
+ * 一律走两级审查，页面不出现「直接生效」路径；
+ * 字段审查不过的记录直接落「已驳回」并回显 fieldCheckResult（不抛 400）。
  */
 const activeTab = ref<'submit' | 'progress'>('submit')
+const config = useConfigStore()
+
+const colleges = ref<{ id: number; name: string }[]>([])
+const classes = ref<{ id: number; name: string; majorId?: number }[]>([])
 
 /* ---------------- 逐条提交 ---------------- */
 const submitting = ref(false)
 const form = ref({
-  studentNo: '',
-  studentName: '',
-  type: 'transfer_in' as ChangeRequest['type'],
-  reason: '',
+  type: 'student' as 'student' | 'teacher',
+  targetUserNo: '',
+  targetCollegeId: undefined as number | undefined,
+  targetClassId: undefined as number | undefined,
 })
-const lastBatchId = ref('')
-const drawerVisible = ref(false)
+const lastResult = ref<ChangeRequest | null>(null)
 
 function validateSingle() {
-  if (!form.value.studentNo.trim()) return '请输入学生学号'
-  if (!form.value.studentName.trim()) return '请输入学生姓名'
-  if (!form.value.reason.trim()) return '请输入异动原因'
-  if (form.value.reason.length > 200) return '异动原因不超过 200 字'
+  if (!form.value.targetUserNo.trim()) return '请输入目标学号/工号'
+  if (!form.value.targetCollegeId) return '请选择目标学院'
+  if (form.value.type === 'student' && !form.value.targetClassId) return '学生异动需选择目标班级'
   return ''
 }
 
@@ -42,9 +45,27 @@ async function submitSingle() {
   }
   submitting.value = true
   try {
-    await changeApi.submit({ ...form.value })
-    ElMessage.success('已提交，进入两级审批流程')
-    form.value = { studentNo: '', studentName: '', type: 'transfer_in', reason: '' }
+    // 教师异动仅支持变更学院：传 targetClassId 会被后端 400（W16），故按类型裁剪
+    const payload = {
+      type: form.value.type,
+      targetUserNo: form.value.targetUserNo.trim(),
+      targetCollegeId: form.value.targetCollegeId as number,
+      targetClassId: form.value.type === 'student' ? form.value.targetClassId : undefined,
+    }
+    const result = await changeApi.submitBySecretary(payload)
+    lastResult.value = result
+    if (result.fieldCheckResult?.length) {
+      ElMessage.warning('已提交，但系统字段审查未通过，记录已落「已驳回」')
+    } else {
+      ElMessage.success('已提交，进入两级审批流程')
+    }
+    form.value = {
+      type: 'student',
+      targetUserNo: '',
+      targetCollegeId: undefined,
+      targetClassId: undefined,
+    }
+    await loadProgress()
   } catch (e) {
     ElMessage.error((e as Error)?.message || COPY.FAILED)
   } finally {
@@ -52,249 +73,224 @@ async function submitSingle() {
   }
 }
 
-function handleBatchUploaded(batchId: string) {
-  lastBatchId.value = batchId
-  ElMessage.success('批次已创建，正在逐行走两级审查')
-  drawerVisible.value = true
-  activeTab.value = 'progress'
-}
+/* ---------------- Excel 批量（同步批次，直接回统计） ---------------- */
+const lastBatch = ref<ChangeImportResult | null>(null)
+const batchUploading = ref(false)
 
-/** 批次进度接口返回行列表，适配为 ImportBatch 形态供 ImportWizard 展示 */
-function toBatch(list: ChangeRequest[]): ImportBatch {
-  const total = list.length
-  const done = list.filter((row) => row.status !== 'pending').length
-  return {
-    batchId: list[0]?.batchId || '',
-    bizType: 'change',
-    fileName: '异动名单.xlsx',
-    status: total > 0 && done >= total ? 'success' : 'parsing',
-    progressPct: total ? Math.round((done / total) * 100) : 0,
-    totalRows: total,
-    successRows: done,
-    errorRows: 0,
-    message: '',
-    createdAt: '',
-    errorPreview: [],
+async function uploadBatch(file: File) {
+  if (!/\.xlsx$/i.test(file.name)) {
+    ElMessage.error('仅支持 .xlsx 文件')
+    return false
   }
+  batchUploading.value = true
+  try {
+    lastBatch.value = await changeApi.importBatch(file)
+    ElMessage.success(
+      `批次 ${lastBatch.value.batchNo}：成功 ${lastBatch.value.okCount} / 失败 ${lastBatch.value.errorCount}`,
+    )
+    await loadProgress()
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || COPY.FAILED)
+  } finally {
+    batchUploading.value = false
+  }
+  return false
 }
 
-/* ---------------- 进度查询 ---------------- */
-const keyword = ref('')
+/* ---------------- 我的提交记录 ----------------
+ * 秘书无 change:request:review，不能用 /api/admin/change（复核列表）；
+ * GET /api/teacher/change 仅需 change:request:submit，返回当前用户本人的提交记录，
+ * 且带 before/after 名称与 fieldCheckResult，正是提交端需要的视图。
+ */
 const status = ref('')
-const page = ref(1)
-const size = ref(10)
 const rows = ref<ChangeRequest[]>([])
-const total = ref(0)
 const loading = ref(false)
-const detailVisible = ref(false)
-const detail = ref<ChangeRequest | null>(null)
 
 async function loadProgress() {
   loading.value = true
   try {
-    const result = await changeApi.page({
-      keyword: keyword.value || undefined,
-      status: status.value || undefined,
-      page: page.value,
-      size: size.value,
-    })
-    rows.value = result.list
-    total.value = result.total
-  } catch {
+    rows.value = await changeApi.mySubmissions()
+  } catch (e) {
     rows.value = []
-    total.value = 0
+    ElMessage.error((e as Error)?.message || COPY.FAILED)
   } finally {
     loading.value = false
   }
 }
 
-function searchProgress() {
-  page.value = 1
-  void loadProgress()
+/** 服务端返回本人全量记录，状态筛选在前端做 */
+const filtered = computed(() =>
+  status.value ? rows.value.filter((r) => r.status === status.value) : rows.value,
+)
+
+/** el-table 行类型为 DefaultRow，此处收窄回业务类型（第三方边界） */
+function beforeText(raw: unknown) {
+  const row = raw as ChangeRequest
+  return `${row.beforeCollegeName || '—'} / ${row.beforeClassName || '—'}`
 }
 
-function openDetail(row: ChangeRequest) {
-  detail.value = row
-  detailVisible.value = true
+function afterText(raw: unknown) {
+  const row = raw as ChangeRequest
+  return `${row.afterCollegeName || '—'}${row.afterClassName ? ` / ${row.afterClassName}` : ''}`
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  transfer_in: '转入',
-  transfer_out: '转出',
-  suspend: '休学',
-  resume: '复学',
-  info_fix: '信息修正',
-}
-
-const STATUS_LABELS: Record<string, { label: string; type: 'success' | 'danger' | 'warning' }> = {
-  approved: { label: '已通过', type: 'success' },
-  rejected: { label: '已驳回', type: 'danger' },
-  pending: { label: '待审核', type: 'warning' },
-}
-
-// 进入页面即拉取异动审批进度
-void loadProgress()
+onMounted(async () => {
+  void config.load()
+  // 组织三表为超管专属，此处用异动提交端的最小权限选项接口
+  const options = await changeApi.orgOptions().catch(() => null)
+  colleges.value = options?.colleges ?? []
+  classes.value = options?.classes ?? []
+  await loadProgress()
+})
 </script>
 
 <template>
   <div class="app-page">
     <el-tabs v-model="activeTab">
       <el-tab-pane label="提交异动" name="submit">
-        <h4 class="mb-16">逐条提交</h4>
-        <el-form :model="form" label-width="96px" style="max-width: 560px">
-          <el-form-item label="学生学号" required>
-            <el-input v-model="form.studentNo" maxlength="32" placeholder="请输入学生学号" />
-          </el-form-item>
-          <el-form-item label="学生姓名" required>
-            <el-input v-model="form.studentName" maxlength="32" placeholder="请输入学生姓名" />
-          </el-form-item>
-          <el-form-item label="异动类型" required>
-            <el-select v-model="form.type" style="width: 100%">
-              <el-option label="转入" value="transfer_in" />
-              <el-option label="转出" value="transfer_out" />
-              <el-option label="休学" value="suspend" />
-              <el-option label="复学" value="resume" />
-              <el-option label="信息修正" value="info_fix" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="异动原因" required>
-            <el-input
-              v-model="form.reason"
-              type="textarea"
-              :rows="3"
-              maxlength="200"
-              show-word-limit
-              placeholder="请说明异动原因（必填，不超过 200 字）"
-            />
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary" :loading="submitting" @click="submitSingle">
-              提交申请
-            </el-button>
-            <span class="text-muted ml-8">提交后进入「系统字段审查 → 超管内容审核」两级流程</span>
-          </el-form-item>
-        </el-form>
+        <el-card shadow="never" style="max-width: 620px">
+          <el-form :model="form" label-width="120px">
+            <el-form-item label="异动类型">
+              <el-radio-group v-model="form.type">
+                <el-radio-button value="student">学生异动</el-radio-button>
+                <el-radio-button value="teacher">教师异动</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="目标学号/工号" required>
+              <el-input v-model="form.targetUserNo" maxlength="32" placeholder="如 20230102" />
+            </el-form-item>
+            <el-form-item label="目标学院" required>
+              <el-select v-model="form.targetCollegeId" filterable style="width: 100%">
+                <el-option
+                  v-for="college in colleges"
+                  :key="college.id"
+                  :label="college.name"
+                  :value="college.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="form.type === 'student'" label="目标班级" required>
+              <el-select v-model="form.targetClassId" filterable style="width: 100%">
+                <el-option
+                  v-for="klass in classes"
+                  :key="klass.id"
+                  :label="klass.name"
+                  :value="klass.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-else label="目标班级">
+              <span class="text-muted">教师异动仅支持变更学院（不填写班级）</span>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="submitting" @click="submitSingle">
+                提交异动申请
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
 
-        <el-divider content-position="left">Excel 批量提交</el-divider>
-        <el-alert
-          title="一个上传批次 = 一个 change_request 批次（逐行生成、共享批次号），全部走两级审查，不允许绕过审查直落库。"
-          type="info"
-          :closable="false"
-          show-icon
-          class="mb-16"
+        <FieldCheckResult
+          v-if="lastResult?.fieldCheckResult?.length"
+          class="mt-16"
+          :items="lastResult.fieldCheckResult"
+          title="系统字段审查"
         />
-        <ImportWizard
-          title="异动名单 Excel 导入"
-          :uploader="changeApi.submitBatch"
-          :poller="(id) => changeApi.batchProgress(id).then((list) => toBatch(list))"
-          @uploaded="handleBatchUploaded"
-        />
+
+        <div class="mt-16">
+          <div class="flex-between mb-8">
+            <span class="import-title">
+              异动名单 Excel 批量提交（学号/工号、变更类型、目标学院、目标班级、原因）
+            </span>
+          </div>
+          <el-upload
+            drag
+            :auto-upload="true"
+            :show-file-list="false"
+            :before-upload="uploadBatch"
+            accept=".xlsx"
+            action="#"
+          >
+            <div class="import-drop">
+              <el-icon :size="32"><UploadFilled /></el-icon>
+              <div class="import-drop-text">
+                将 .xlsx 文件拖到此处，或
+                <em>点击上传</em>
+              </div>
+              <div class="text-muted">
+                单文件 ≤
+                {{ config.importMaxSizeMb }}MB；服务端逐行走字段审查，审查不过的行直接落「已驳回」
+              </div>
+            </div>
+          </el-upload>
+          <el-alert
+            v-if="lastBatch"
+            class="mt-8"
+            :title="`批次 ${lastBatch.batchNo}：共 ${lastBatch.total} 行，成功 ${lastBatch.okCount}，失败 ${lastBatch.errorCount}`"
+            type="info"
+            :closable="false"
+            show-icon
+          />
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="审批进度" name="progress">
         <div class="app-toolbar">
-          <el-select
-            v-model="status"
-            clearable
-            placeholder="审核状态"
-            style="width: 160px"
-            @change="searchProgress"
-          >
-            <el-option label="待审核" value="pending" />
+          <el-select v-model="status" clearable placeholder="全部状态" style="width: 170px">
+            <el-option label="待审批" value="pending_review" />
+            <el-option label="字段审查中" value="pending_field_check" />
             <el-option label="已通过" value="approved" />
             <el-option label="已驳回" value="rejected" />
           </el-select>
-          <el-input
-            v-model="keyword"
-            placeholder="学号 / 姓名"
-            clearable
-            style="width: 200px"
-            @keyup.enter="searchProgress"
-            @clear="searchProgress"
-          />
-          <el-button type="primary" @click="searchProgress">查询</el-button>
+          <el-button @click="loadProgress">刷新</el-button>
+          <span class="text-muted">
+            仅本人提交记录；字段审查不过的记录直接落「已驳回」并回显原因
+          </span>
         </div>
 
-        <el-table v-loading="loading" :data="rows" border stripe>
-          <el-table-column prop="studentNo" label="学号" width="140" />
-          <el-table-column prop="studentName" label="姓名" width="110" />
-          <el-table-column label="异动类型" width="120">
-            <template #default="{ row }">{{ TYPE_LABELS[row.type] || row.type }}</template>
+        <el-table v-loading="loading" :data="filtered" border stripe>
+          <el-table-column prop="id" label="编号" width="90" />
+          <el-table-column prop="targetUserNo" label="学号/工号" width="140" />
+          <el-table-column prop="targetUserName" label="姓名" width="110">
+            <template #default="{ row }">{{ row.targetUserName || '—' }}</template>
           </el-table-column>
-          <el-table-column label="批次" width="150">
-            <template #default="{ row }">{{ row.batchId || '逐条提交' }}</template>
-          </el-table-column>
-          <el-table-column label="系统字段审查" width="130">
+          <el-table-column label="类型" width="110">
             <template #default="{ row }">
-              <span v-if="!row.fieldCheck || row.fieldCheck.length === 0" class="text-muted">
-                —
-              </span>
-              <span
-                v-else-if="row.fieldCheck.every((f: { passed: boolean }) => f.passed)"
-                class="text-success"
-              >
-                全部通过
-              </span>
-              <span v-else class="text-danger">
-                {{ row.fieldCheck.filter((f: { passed: boolean }) => !f.passed).length }} 项未通过
-              </span>
+              {{ row.type === 'student' ? '学生异动' : '教师异动' }}
             </template>
           </el-table-column>
-          <el-table-column label="内容审核" width="110">
+          <el-table-column label="当前归属" min-width="170">
+            <template #default="{ row }">{{ beforeText(row) }}</template>
+          </el-table-column>
+          <el-table-column label="变更后" min-width="170">
+            <template #default="{ row }">{{ afterText(row) }}</template>
+          </el-table-column>
+          <el-table-column label="字段审查" width="120">
             <template #default="{ row }">
-              <el-tag :type="STATUS_LABELS[row.status].type" size="small">
-                {{ STATUS_LABELS[row.status].label }}
+              <el-tag v-if="row.fieldCheckResult?.length" type="danger" size="small">
+                {{ row.fieldCheckResult.length }} 项未过
+              </el-tag>
+              <span v-else class="text-muted">通过</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="batchNo" label="批次号" width="130">
+            <template #default="{ row }">{{ row.batchNo || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-tag :type="statusMetaOf(CHANGE_STATUS_META, row.status).type" size="small">
+                {{ statusMetaOf(CHANGE_STATUS_META, row.status).label }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="120">
-            <template #default="{ row }">
-              <el-button size="small" text @click="openDetail(row)">详情</el-button>
-            </template>
+          <el-table-column label="提交时间" width="170">
+            <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
           </el-table-column>
+          <template #empty>
+            <el-empty :description="COPY.EMPTY" :image-size="80" />
+          </template>
         </el-table>
-        <div class="app-pagination">
-          <el-pagination
-            v-model:current-page="page"
-            v-model:page-size="size"
-            :total="total"
-            :page-sizes="[10, 20, 50]"
-            layout="total, sizes, prev, pager, next"
-            background
-            @current-change="loadProgress"
-            @size-change="searchProgress"
-          />
-        </div>
       </el-tab-pane>
     </el-tabs>
-
-    <el-drawer v-model="drawerVisible" title="批量异动审查进度" size="680px" append-to-body>
-      <BatchProgressDrawer
-        v-if="lastBatchId"
-        :batch-id="lastBatchId"
-        :fetcher="changeApi.batchProgress"
-      />
-    </el-drawer>
-
-    <el-dialog v-model="detailVisible" title="异动详情" width="600px" append-to-body>
-      <template v-if="detail">
-        <el-descriptions :column="2" border size="small" class="mb-16">
-          <el-descriptions-item label="学号">{{ detail.studentNo }}</el-descriptions-item>
-          <el-descriptions-item label="姓名">{{ detail.studentName }}</el-descriptions-item>
-          <el-descriptions-item label="异动类型">
-            {{ TYPE_LABELS[detail.type] || detail.type }}
-          </el-descriptions-item>
-          <el-descriptions-item label="申请人">{{ detail.submitterName }}</el-descriptions-item>
-          <el-descriptions-item label="异动原因" :span="2">
-            {{ detail.reason }}
-          </el-descriptions-item>
-          <el-descriptions-item label="审核意见" :span="2">
-            {{ detail.reviewComment || '—' }}
-          </el-descriptions-item>
-        </el-descriptions>
-        <h4>系统字段审查结果</h4>
-        <FieldCheckResult :items="detail.fieldCheck" />
-      </template>
-    </el-dialog>
   </div>
 </template>

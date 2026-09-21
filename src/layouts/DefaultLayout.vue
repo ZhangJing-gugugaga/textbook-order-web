@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+
 import { useAuthStore } from '@/stores/auth'
 import { useNoticeStore } from '@/stores/notice'
 import { useWindowStore } from '@/stores/window'

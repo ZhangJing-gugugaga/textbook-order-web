@@ -1,23 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWindowStore } from '@/stores/window'
+import { useCountdown } from '@/composables/useCountdown'
 import { formatCountdown, windowStatusText } from '@/utils/format'
 
 /**
  * 全局窗口三态横幅（PRD 功能 2 / SPEC §8）：
  * not_open / open / closed 文案与倒计时；closed 时提示可查看历史记录。
+ *
+ * 倒计时用 `useCountdown` 每秒重算——该组合式函数在卸载时清理计时器，
+ * 不再出现「登出/登录循环后计时器泄漏」（评审 Q8）。
  */
 const windowStore = useWindowStore()
 const { status } = storeToRefs(windowStore)
 
-// 每秒本地刷新倒计时（不触发整页重渲染）
-const remain = ref(windowStore.remainMs)
-const startRemain = ref(windowStore.startRemainMs)
-setInterval(() => {
-  remain.value = windowStore.remainMs
-  startRemain.value = windowStore.startRemainMs
-}, 1000)
+const remain = useCountdown(() => windowStore.remainMs)
+const startRemain = useCountdown(() => windowStore.startRemainMs)
 
 const text = computed(() => windowStatusText(status.value, remain.value, startRemain.value))
 const alertType = computed<'success' | 'warning' | 'info'>(() => {
@@ -33,7 +32,7 @@ const countdownText = computed(() => {
 </script>
 
 <template>
-  <div class="window-banner" data-testid="window-banner">
+  <div v-if="windowStore.canView" class="window-banner" data-testid="window-banner">
     <el-alert :title="text" :type="alertType" :closable="false" show-icon>
       <template v-if="countdownText" #title>
         <span>{{ text }}（{{ countdownText }}）</span>

@@ -1,20 +1,22 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
-import { ElMessage, FormInstance } from 'element-plus'
+import { computed, onMounted, reactive, ref } from 'vue'
+import type { FormInstance } from 'element-plus'
 import { semesterApi } from '@/api/semester'
 import SemesterLifecyclePanel from '@/components/SemesterLifecyclePanel.vue'
-import { COPY } from '@/utils/constants'
+import { COPY, DATETIME_FORMAT, SEMESTER_ACTIVE_STATUS, WINDOW_STATUS } from '@/utils/constants'
+import { formatDate, formatDateTime } from '@/utils/format'
+import { validateForm } from '@/utils/validate'
 import type { Semester } from '@/types'
 
 /**
- * 学期与窗口引擎（PRD 征订窗口管理页 / 02 §6.2 Q1 改版）：
- * 学期列表 + 生命周期（新建 draft → 激活 → 归档）+ 窗口操作，唯一控制入口。
+ * 学期与窗口引擎（PRD 征订窗口管理页 / API.md §3.2）：
+ * 学期列表 + 生命周期（新建 draft → 激活双缓冲切换 → 归档）+ 窗口操作，唯一控制入口。
+ * 时间格式统一 yyyy-MM-dd HH:mm:ss（后端 spring.mvc.format.date-time）。
  */
 const semesters = ref<Semester[]>([])
 const selectedId = ref(0)
 const loading = ref(false)
-
-const selected = ref<Semester | null>(null)
+const selected = computed(() => semesters.value.find((s) => s.id === selectedId.value) ?? null)
 
 async function load() {
   loading.value = true
@@ -22,19 +24,14 @@ async function load() {
     semesters.value = await semesterApi.list()
     if (!selectedId.value || !semesters.value.some((s) => s.id === selectedId.value)) {
       selectedId.value =
-        semesters.value.find((s) => s.status === 'active')?.id ?? semesters.value[0]?.id ?? 0
+        semesters.value.find((s) => s.activeStatus === 'active')?.id ?? semesters.value[0]?.id ?? 0
     }
-    selected.value = semesters.value.find((s) => s.id === selectedId.value) ?? null
-  } catch {
+  } catch (error) {
     semesters.value = []
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
     loading.value = false
   }
-}
-
-function select(id: number) {
-  selectedId.value = id
-  selected.value = semesters.value.find((s) => s.id === id) ?? null
 }
 
 /* ---------------- 新建学期 ---------------- */
@@ -47,8 +44,8 @@ const createForm = reactive({
   endDate: '',
   windowStart: '',
   windowEnd: '',
-  autoOpen: true,
-  autoClose: true,
+  autoOpen: 1,
+  autoClose: 1,
 })
 const createRules = {
   name: [{ required: true, message: '请输入学期名称', trigger: 'blur' }],
@@ -59,29 +56,31 @@ const createRules = {
 }
 
 function openCreate() {
-  createForm.name = ''
-  createForm.startDate = ''
-  createForm.endDate = ''
-  createForm.windowStart = ''
-  createForm.windowEnd = ''
-  createForm.autoOpen = true
-  createForm.autoClose = true
+  Object.assign(createForm, {
+    name: '',
+    startDate: '',
+    endDate: '',
+    windowStart: '',
+    windowEnd: '',
+    autoOpen: 1,
+    autoClose: 1,
+  })
   createVisible.value = true
 }
 
 async function submitCreate() {
-  await createFormRef.value?.validate()
+  if (!(await validateForm(createFormRef.value))) return
   if (new Date(createForm.windowStart) >= new Date(createForm.windowEnd)) {
     ElMessage.error('窗口开始时间必须早于结束时间')
     return
   }
   creating.value = true
   try {
-    const created = await semesterApi.create({ ...createForm, status: 'draft' })
-    ElMessage.success('学期已创建（草稿），激活后进入缓冲区数据导入')
+    const created = await semesterApi.create({ ...createForm })
+    ElMessage.success('学期已创建（可导入），激活后进入缓冲区数据导入')
     createVisible.value = false
     await load()
-    select(created.id)
+    selectedId.value = created.id
   } catch (error) {
     ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
@@ -89,7 +88,15 @@ async function submitCreate() {
   }
 }
 
-load()
+function semesterStatusLabel(status: string) {
+  return SEMESTER_ACTIVE_STATUS[status as keyof typeof SEMESTER_ACTIVE_STATUS] ?? status
+}
+
+function windowStatusLabel(status: string) {
+  return WINDOW_STATUS[status as keyof typeof WINDOW_STATUS] ?? status
+}
+
+onMounted(load)
 </script>
 
 <template>
@@ -99,41 +106,60 @@ load()
       <el-button type="primary" @click="openCreate">新建学期</el-button>
     </div>
 
-    <el-table :data="semesters" border stripe @row-click="(row: Semester) => select(row.id)">
+    <el-table :data="semesters" border stripe @row-click="(row: Semester) => (selectedId = row.id)">
       <el-table-column label="选择" width="70">
         <template #default="{ row }">
-          <el-radio :model-value="selectedId" :value="row.id" @change="select(row.id)">
+          <el-radio :model-value="selectedId" :value="row.id" @change="selectedId = row.id">
             &nbsp;
           </el-radio>
         </template>
       </el-table-column>
-      <el-table-column prop="name" label="学期" min-width="150" />
-      <el-table-column label="学期起止" min-width="220">
-        <template #default="{ row }">{{ row.startDate }} ~ {{ row.endDate }}</template>
-      </el-table-column>
-      <el-table-column label="窗口起止" min-width="240">
+      <el-table-column prop="name" label="学期" min-width="180" />
+      <el-table-column label="学期起止" min-width="200">
         <template #default="{ row }">
-          <span v-if="row.windowStart">{{ row.windowStart }} ~ {{ row.windowEnd }}</span>
+          {{ formatDate(row.startDate) }} ~ {{ formatDate(row.endDate) }}
+        </template>
+      </el-table-column>
+      <el-table-column label="窗口起止" min-width="300">
+        <template #default="{ row }">
+          <span v-if="row.windowStart">
+            {{ formatDateTime(row.windowStart) }} ~ {{ formatDateTime(row.windowEnd) }}
+          </span>
           <span v-else class="text-muted">未设置</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="学期状态" width="110">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'active' ? 'success' : 'info'" size="small">
-            {{ row.status === 'active' ? '进行中' : row.status === 'draft' ? '草稿' : '已归档' }}
+          <el-tag :type="row.activeStatus === 'active' ? 'success' : 'info'" size="small">
+            {{ semesterStatusLabel(row.activeStatus) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="自动开关窗" width="130">
+      <el-table-column label="窗口状态" width="110">
         <template #default="{ row }">
-          <el-tag size="small" :type="row.autoOpen ? 'success' : 'info'">开</el-tag>
-          <el-tag size="small" :type="row.autoClose ? 'success' : 'info'" class="ml-8">关</el-tag>
+          <el-tag :type="row.windowStatus === 'open' ? 'success' : 'warning'" size="small">
+            {{ windowStatusLabel(row.windowStatus) }}
+          </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="自动开关窗" width="150">
+        <template #default="{ row }">
+          <el-tag size="small" :type="row.autoOpen === 1 ? 'success' : 'info'">
+            开窗{{ row.autoOpen === 1 ? '自动' : '手动' }}
+          </el-tag>
+          <el-tag size="small" :type="row.autoClose === 1 ? 'success' : 'info'" class="ml-8">
+            截止{{ row.autoClose === 1 ? '自动' : '手动' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="version" label="版本" width="80" align="center" />
+      <template #empty>
+        <el-empty :description="COPY.EMPTY" :image-size="80" />
+      </template>
     </el-table>
 
     <div v-if="selected" class="mt-16">
-      <SemesterLifecyclePanel :semester="selected" @changed="load" />
+      <SemesterLifecyclePanel :key="selected.id" :semester="selected" @changed="load" />
     </div>
     <el-empty v-else :description="COPY.EMPTY" />
 
@@ -142,7 +168,7 @@ load()
         <el-form-item label="学期名称" prop="name">
           <el-input
             v-model="createForm.name"
-            placeholder="如 2026-2027 学年第一学期"
+            placeholder="如 2027-2028学年秋季学期"
             maxlength="32"
           />
         </el-form-item>
@@ -167,7 +193,7 @@ load()
           <el-date-picker
             v-model="createForm.windowStart"
             type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
+            :value-format="DATETIME_FORMAT"
             placeholder="选择窗口开始时间"
             style="width: 100%"
           />
@@ -176,16 +202,16 @@ load()
           <el-date-picker
             v-model="createForm.windowEnd"
             type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
+            :value-format="DATETIME_FORMAT"
             placeholder="选择窗口截止时间（天数任意）"
             style="width: 100%"
           />
         </el-form-item>
         <el-form-item label="自动开启">
-          <el-switch v-model="createForm.autoOpen" />
+          <el-switch v-model="createForm.autoOpen" :active-value="1" :inactive-value="0" />
         </el-form-item>
         <el-form-item label="自动截止">
-          <el-switch v-model="createForm.autoClose" />
+          <el-switch v-model="createForm.autoClose" :active-value="1" :inactive-value="0" />
         </el-form-item>
       </el-form>
       <template #footer>

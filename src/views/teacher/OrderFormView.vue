@@ -1,225 +1,202 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, reactive, ref } from 'vue'
+
 import { orderFormApi } from '@/api/orderForm'
-import { textbookApi } from '@/api/textbook'
 import FieldCheckResult from '@/components/FieldCheckResult.vue'
-import { useAuthStore } from '@/stores/auth'
 import { useWindowStore } from '@/stores/window'
 import { useConfigStore } from '@/stores/config'
-import { COPY } from '@/utils/constants'
-import { formatMoney, formatDateTime, windowStatusText } from '@/utils/format'
+import { CODE, COPY, ORDER_FORM_STATUS } from '@/utils/constants'
+import { asRow } from '@/utils/table'
+import { formatDateTime, formatMoney, windowStatusText } from '@/utils/format'
 import { ApiError } from '@/api/http'
-import type { FieldCheckItem, OrderForm, TeachingAssignment, Textbook } from '@/types'
+import type { FieldCheckIssue, OrderForm, TeacherCourseGroup, TeacherTextbookOption } from '@/types'
 
-interface DraftItem {
+interface DraftRow {
+  /** 行内唯一键（课程×班级×教材） */
   key: string
+  courseId: number
+  classId: number
   textbookId: number
-  title: string
-  isbn: string
-  price: number
   quantity: number
 }
 
 /**
- * 填报教材页（PRD 填报教材页 / 功能 3）：
- * 窗口内逐课程选教材、填数量；提交先过系统字段审查（逐字段提示可修复重提）
- * 再转超管内容审核；被驳回表单解锁补正重提；关窗锁定。
+ * 填报教材页（PRD 填报教材页 / API.md §3.6）：
+ * 后端模型为「一教师一学期一单」，明细每行 = 课程 × 班级 × 教材 × 数量；
+ * 提交先过系统字段审查（400 FIELD_CHECK_FAILED 逐字段回显，可修复重提），
+ * 再转超管内容审核；被驳回表单在 correctDeadline 前可补正重提（关窗后仍可）。
  */
-const route = useRoute()
-const auth = useAuthStore()
 const windowStore = useWindowStore()
 const config = useConfigStore()
 
-const assignments = ref<TeachingAssignment[]>([])
-const myForms = ref<OrderForm[]>([])
+const groups = ref<TeacherCourseGroup[]>([])
+const form = ref<OrderForm | null>(null)
+const rows = ref<DraftRow[]>([])
+const fieldIssues = ref<FieldCheckIssue[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 
-const activeKey = ref('') // `${courseId}:${classId}`
-const drafts = ref<Record<string, DraftItem[]>>({})
-const remarks = ref<Record<string, string>>({})
-const fieldChecks = ref<Record<string, FieldCheckItem[]>>({})
-const searchKeyword = ref('')
-const searchResults = ref<Textbook[]>([])
+/* ---------------- 选书器 ---------------- */
+const picker = reactive({
+  courseId: undefined as number | undefined,
+  classId: undefined as number | undefined,
+  keyword: '',
+})
+const options = ref<TeacherTextbookOption[]>([])
 const searching = ref(false)
 
-const canFill = computed(() => windowStore.status === 'open')
-
+/** 课程 × 班级 扁平选项（选书器与明细共用） */
 const pairs = computed(() =>
-  assignments.value.map((item) => ({
-    key: `${item.courseId}:${item.classId}`,
-    courseId: item.courseId,
-    courseName: item.courseName,
-    classId: item.classId,
-    className: item.className,
-  })),
+  groups.value.flatMap((group) =>
+    group.courses.map((course) => ({
+      key: `${course.courseId}:${group.classId}`,
+      courseId: course.courseId,
+      courseName: course.courseName,
+      classId: group.classId,
+      className: group.className,
+    })),
+  ),
 )
 
-const activePair = computed(() => pairs.value.find((item) => item.key === activeKey.value) ?? null)
-const activeItems = computed(() => drafts.value[activeKey.value] ?? [])
-const activeForm = computed(() => myForms.value.find((f) => isFormOf(f, activePair.value)) ?? null)
-
-function isFormOf(form: OrderForm, pair: { courseId: number; classId: number } | null) {
-  if (!pair) return false
-  return form.items.some((item) => item.courseId === pair.courseId && item.classId === pair.classId)
+/** 数量输入上限：后端 QTY_RANGE 以班级人数为上限、缺失回退 order.quantity.max_default；
+ *  班级人数未由接口下发，故前端以 system_config 回退值作输入上限，最终以后端裁决为准。 */
+function quantityMax(classId?: number) {
+  void classId
+  return config.quantityMax
 }
 
-function quantityMax() {
-  const klass = activePair.value
-  const fromClass = klass ? 200 : 100
-  return Math.min(config.quantityMax, fromClass)
+const canFill = computed(() => windowStore.status === 'open')
+/** 补正豁免窗口：被驳回表单在 correctDeadline 前可重提 */
+const isCorrectable = computed(() => {
+  const status = form.value?.status
+  if (status !== 'rejected' && status !== 'rejected_auto') return false
+  if (!form.value?.correctDeadline) return true
+  return new Date(form.value.correctDeadline).getTime() > Date.now() + windowStore.serverTimeOffset
+})
+const editable = computed(() => canFill.value || isCorrectable.value)
+const isLockedByReview = computed(
+  () => form.value?.status === 'pending_review' || form.value?.status === 'reviewed',
+)
+
+function rowKey(courseId: number, classId: number, textbookId: number) {
+  return `${courseId}:${classId}:${textbookId}`
 }
 
 async function load() {
   loading.value = true
   try {
-    const [list, forms] = await Promise.all([
+    const [courseGroups, myForm] = await Promise.all([
       orderFormApi.myCourses(),
-      orderFormApi.myPage({ page: 1, size: 100 }),
+      orderFormApi.myForm(),
     ])
-    assignments.value = list
-    myForms.value = forms.list
-    // 初始化草稿：已有表单载入明细，否则空草稿
-    for (const pair of pairs.value) {
-      if (drafts.value[pair.key]) continue
-      const form = myForms.value.find((f) => isFormOf(f, pair))
-      drafts.value[pair.key] = form
-        ? form.items.map((item) => ({
-            key: `${item.textbookId}`,
-            textbookId: item.textbookId,
-            title: item.textbookTitle,
-            isbn: item.isbn,
-            price: item.price,
-            quantity: item.quantity,
-          }))
-        : []
+    groups.value = courseGroups
+    form.value = myForm
+    fieldIssues.value = myForm?.fieldCheckResult ?? []
+    rows.value = (myForm?.items ?? []).map((item) => ({
+      key: rowKey(item.courseId, item.classId, item.textbookId),
+      courseId: item.courseId,
+      classId: item.classId,
+      textbookId: item.textbookId,
+      quantity: item.quantity,
+    }))
+    if (!picker.classId && pairs.value.length) {
+      picker.courseId = pairs.value[0].courseId
+      picker.classId = pairs.value[0].classId
     }
-    const queryCourse = Number(route.query.courseId)
-    const queryClass = Number(route.query.classId)
-    const matched = pairs.value.find(
-      (item) => item.courseId === queryCourse && item.classId === queryClass,
-    )
-    if (matched) activeKey.value = matched.key
-    else if (!activeKey.value && pairs.value.length) activeKey.value = pairs.value[0].key
-  } catch {
-    assignments.value = []
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
     loading.value = false
   }
 }
 
-async function searchTextbooks() {
-  const keyword = searchKeyword.value.trim()
-  if (!keyword) {
-    searchResults.value = []
-    return
-  }
+async function searchOptions() {
   searching.value = true
   try {
-    searchResults.value = await textbookApi.search(keyword)
-  } catch {
-    searchResults.value = []
+    options.value = await orderFormApi.searchTextbooks(picker.keyword.trim() || undefined)
+  } catch (error) {
+    options.value = []
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
     searching.value = false
   }
 }
 
-function addTextbook(book: Textbook) {
-  if (!activeKey.value) return
-  if (book.status !== 'active') {
-    ElMessage.warning('该教材已停用，不可选用')
+function addRow(option: TeacherTextbookOption) {
+  if (!picker.courseId || !picker.classId) {
+    ElMessage.warning('请先选择课程与班级')
     return
   }
-  const list = drafts.value[activeKey.value] ?? []
-  if (list.some((item) => item.textbookId === book.id)) {
+  const key = rowKey(picker.courseId, picker.classId, option.textbookId)
+  if (rows.value.some((row) => row.key === key)) {
     ElMessage.warning('该教材已在明细中')
     return
   }
-  list.push({
-    key: `${book.id}`,
-    textbookId: book.id,
-    title: book.title,
-    isbn: book.isbn,
-    price: book.price,
-    quantity: 1,
-  })
-  drafts.value[activeKey.value] = [...list]
-  searchKeyword.value = ''
-  searchResults.value = []
+  rows.value = [
+    ...rows.value,
+    {
+      key,
+      courseId: picker.courseId,
+      classId: picker.classId,
+      textbookId: option.textbookId,
+      quantity: 1,
+    },
+  ]
 }
 
-function removeItem(index: number) {
-  const list = [...(drafts.value[activeKey.value] ?? [])]
-  list.splice(index, 1)
-  drafts.value[activeKey.value] = list
+function removeRow(key: string) {
+  rows.value = rows.value.filter((row) => row.key !== key)
 }
 
-function setQuantity(index: number, value: number) {
-  const list = [...(drafts.value[activeKey.value] ?? [])]
-  if (!list[index]) return
-  list[index].quantity = value
-  drafts.value[activeKey.value] = list
+/** el-table 行类型为 DefaultRow，此处收窄回业务类型（第三方边界） */
+function labelOf(raw: unknown) {
+  const row = raw as DraftRow
+  const pair = pairs.value.find((p) => p.courseId === row.courseId && p.classId === row.classId)
+  const book = options.value.find((o) => o.textbookId === row.textbookId)
+  return {
+    course: pair
+      ? `${pair.courseName} · ${pair.className}`
+      : `课程#${row.courseId} 班级#${row.classId}`,
+    book: book
+      ? `${book.title}（${book.isbn}）`
+      : form.value?.items.find((i) => i.textbookId === row.textbookId)?.textbookTitle ||
+        `教材#${row.textbookId}`,
+  }
 }
 
-function totalQuantity() {
-  return activeItems.value.reduce((sum, item) => sum + (item.quantity || 0), 0)
-}
-
-function totalAmount() {
-  return activeItems.value.reduce((sum, item) => sum + item.price * (item.quantity || 0), 0)
-}
+const totalQuantity = computed(() => rows.value.reduce((sum, row) => sum + (row.quantity || 0), 0))
 
 async function submit() {
-  const pair = activePair.value
-  if (!pair) return
-  const items = activeItems.value
-  if (items.length === 0) {
-    ElMessage.error('请先从教材库选择教材')
+  if (rows.value.length === 0) {
+    ElMessage.error('请先添加教材明细')
     return
   }
-  if (items.some((item) => !item.quantity || item.quantity <= 0)) {
-    ElMessage.error('数量需大于 0')
+  if (rows.value.some((row) => !row.quantity || row.quantity < 1)) {
+    ElMessage.error('数量需为 1 以上整数')
     return
   }
   submitting.value = true
   try {
-    const payload = {
-      teacherId: auth.user?.id ?? 0,
-      items: items.map((item) => ({
-        courseId: pair.courseId,
-        classId: pair.classId,
-        textbookId: item.textbookId,
-        quantity: item.quantity,
+    // 覆盖语义：重提 = 整单替换；补正重提与首次提交同一端点
+    form.value = await orderFormApi.submit(
+      rows.value.map((row) => ({
+        courseId: row.courseId,
+        classId: row.classId,
+        textbookId: row.textbookId,
+        quantity: row.quantity,
       })),
-      remark: remarks.value[activeKey.value] || undefined,
-    }
-    const isResubmit = activeForm.value?.status === 'rejected'
-    const result =
-      isResubmit && activeForm.value
-        ? await orderFormApi.resubmit(activeForm.value.id, payload)
-        : await orderFormApi.submit(payload)
-
-    if (result.fieldCheck && result.fieldCheck.some((item) => !item.passed)) {
-      fieldChecks.value[activeKey.value] = result.fieldCheck
-      ElMessage.error(
-        `存在 ${result.fieldCheck.filter((i) => !i.passed).length} 项问题，请按提示修复后重新提交`,
-      )
-    } else {
-      delete fieldChecks.value[activeKey.value]
-      ElMessage.success('已提交，等待复核')
-      await load()
-    }
+    )
+    fieldIssues.value = form.value?.fieldCheckResult ?? []
+    ElMessage.success('已提交，等待复核')
   } catch (error) {
-    // 422 字段审查失败：逐字段回显
+    // 400 FIELD_CHECK_FAILED：data 为逐项 [{field, rule, message}]
     if (
       error instanceof ApiError &&
-      error.code === 42200 &&
-      Array.isArray((error.data as { errors?: unknown })?.errors)
+      error.code === CODE.FIELD_CHECK_FAILED &&
+      Array.isArray(error.data)
     ) {
-      fieldChecks.value[activeKey.value] = (error.data as { errors: FieldCheckItem[] }).errors
-      ElMessage.error('存在未通过的字段审查，请按提示修复后重新提交')
+      fieldIssues.value = error.data as FieldCheckIssue[]
+      ElMessage.error((error as Error).message || '存在未通过的字段审查，请按提示修复后重新提交')
     } else {
       ElMessage.error((error as Error)?.message || COPY.FAILED)
     }
@@ -228,303 +205,215 @@ async function submit() {
   }
 }
 
-const STATUS_LABELS: Record<
-  string,
-  { label: string; type: 'success' | 'danger' | 'warning' | 'info' }
-> = {
-  draft: { label: '草稿', type: 'info' },
-  pending_review: { label: '已提交，待复核', type: 'warning' },
-  reviewed: { label: '已复核', type: 'success' },
-  rejected: { label: '已驳回', type: 'danger' },
-}
+const statusMeta = computed(() => {
+  const status = form.value?.status
+  if (!status) return null
+  return { label: ORDER_FORM_STATUS[status as keyof typeof ORDER_FORM_STATUS] ?? status, status }
+})
 
 onMounted(() => {
   void windowStore.fetch()
+  void config.load()
+  void searchOptions()
   void load()
 })
 </script>
 
 <template>
-  <div class="app-page">
+  <div class="app-page" v-loading="loading">
     <div class="flex-between mb-16">
       <span class="text-muted">
         {{ windowStatusText(windowStore.status, windowStore.remainMs, windowStore.startRemainMs) }}
       </span>
-      <span class="text-muted">数量上限 {{ quantityMax() }}（来自 system_config 与班级人数）</span>
+      <span class="text-muted">
+        数量上限 {{ quantityMax() }}（班级人数缺失时回退 system_config）
+      </span>
     </div>
 
-    <div v-loading="loading" class="order-form-layout">
-      <!-- 课程 × 班级 列表 -->
-      <div class="order-form-side">
-        <div class="side-title">我的课程 × 班级</div>
-        <el-menu :default-active="activeKey" class="side-menu">
-          <el-menu-item
+    <!-- 审查 / 驳回状态条 -->
+    <el-alert
+      v-if="form?.status === 'rejected' || form?.status === 'rejected_auto'"
+      class="mb-16"
+      type="error"
+      :closable="false"
+      show-icon
+      :title="`表单被驳回，理由：${form?.reviewNote || '见字段审查结果'}，已解锁可补正重提${form?.correctDeadline ? `（补正截止 ${formatDateTime(form.correctDeadline)}）` : ''}`"
+    />
+    <el-alert
+      v-else-if="form?.status === 'pending_review'"
+      class="mb-16"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="已提交，等待复核（超管内容审核中，暂不可修改）"
+    />
+    <el-alert
+      v-else-if="form?.status === 'reviewed'"
+      class="mb-16"
+      type="success"
+      :closable="false"
+      show-icon
+      :title="`已复核通过${form?.reviewBy ? `（审核人 #${form.reviewBy}）` : ''}`"
+    />
+
+    <FieldCheckResult
+      v-if="fieldIssues.length"
+      class="mb-16"
+      :items="fieldIssues"
+      title="系统字段审查"
+    />
+
+    <!-- 选书器 -->
+    <el-card v-if="editable && !isLockedByReview" class="mb-16" shadow="never">
+      <template #header>
+        <span>添加教材明细</span>
+      </template>
+      <div class="picker-bar">
+        <el-select v-model="picker.courseId" placeholder="选择课程" style="width: 220px" filterable>
+          <el-option
             v-for="pair in pairs"
             :key="pair.key"
-            :index="pair.key"
-            @click="activeKey = pair.key"
-          >
-            <div class="side-item">
-              <div class="side-course">{{ pair.courseName }}</div>
-              <div class="side-class">
-                {{ pair.className }}
-                <el-tag
-                  v-if="myForms.find((f) => isFormOf(f, pair))"
-                  size="small"
-                  :type="STATUS_LABELS[myForms.find((f) => isFormOf(f, pair))!.status].type"
-                >
-                  {{ STATUS_LABELS[myForms.find((f) => isFormOf(f, pair))!.status].label }}
-                </el-tag>
-              </div>
-            </div>
-          </el-menu-item>
-        </el-menu>
-        <el-empty
-          v-if="pairs.length === 0"
-          description="暂无任课关系，请联系教材室导入"
-          :image-size="70"
-        />
+            :label="`${pair.courseName} · ${pair.className}`"
+            :value="pair.courseId"
+            @click="picker.classId = pair.classId"
+          />
+        </el-select>
+        <el-select v-model="picker.classId" placeholder="选择班级" style="width: 180px" filterable>
+          <el-option
+            v-for="group in groups"
+            :key="group.classId"
+            :label="group.className"
+            :value="group.classId"
+          />
+        </el-select>
+        <el-input
+          v-model="picker.keyword"
+          placeholder="搜索教材库（书名 / ISBN / 作者 / 出版社）"
+          clearable
+          style="max-width: 320px"
+          @keyup.enter="searchOptions"
+          @clear="searchOptions"
+        >
+          <template #append>
+            <el-button :loading="searching" @click="searchOptions">搜索</el-button>
+          </template>
+        </el-input>
       </div>
 
-      <!-- 明细编辑 -->
-      <div class="order-form-main">
-        <template v-if="activePair">
-          <h3 class="mb-16">{{ activePair.courseName }} · {{ activePair.className }}</h3>
-
-          <!-- 驳回补正横幅 -->
-          <el-alert
-            v-if="activeForm && activeForm.status === 'rejected'"
-            class="mb-16"
-            :title="`表单被驳回，理由：${activeForm.reviewComment || '未填写'}，已解锁可补正重提`"
-            type="error"
-            :closable="false"
-            show-icon
-          />
-
-          <!-- 审查状态条 -->
-          <el-alert
-            v-if="activeForm && activeForm.status === 'pending_review'"
-            class="mb-16"
-            title="已提交，等待复核（超管内容审核中，暂不可修改）"
-            type="warning"
-            :closable="false"
-            show-icon
-          />
-          <el-alert
-            v-if="activeForm && activeForm.status === 'reviewed'"
-            class="mb-16"
-            :title="`已复核通过${activeForm.reviewedBy ? `（${activeForm.reviewedBy}）` : ''}`"
-            type="success"
-            :closable="false"
-            show-icon
-          />
-
-          <!-- 字段审查回显 -->
-          <FieldCheckResult
-            v-if="fieldChecks[activeKey]"
-            class="mb-16"
-            :items="fieldChecks[activeKey]"
-            title="系统字段审查"
-          />
-
-          <!-- 教材选择器 -->
-          <div v-if="canFill && (!activeForm || activeForm.status === 'rejected')" class="mb-16">
-            <el-input
-              v-model="searchKeyword"
-              placeholder="搜索教材库（书名 / ISBN）"
-              clearable
-              style="max-width: 360px"
-              :loading="searching"
-              @input="searchTextbooks"
-              @clear="searchResults = []"
-            />
-            <el-table
-              v-if="searchResults.length"
-              :data="searchResults"
+      <el-table
+        v-if="options.length"
+        :data="options"
+        size="small"
+        border
+        class="mt-8"
+        max-height="240"
+      >
+        <el-table-column prop="isbn" label="ISBN" width="150" />
+        <el-table-column prop="title" label="书名" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="edition" label="版次" width="90" />
+        <el-table-column prop="author" label="作者" width="110" />
+        <el-table-column prop="press" label="出版社" width="150" show-overflow-tooltip />
+        <el-table-column label="单价" width="100">
+          <template #default="{ row }">{{ formatMoney(row.price) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">
+            <el-button
               size="small"
-              border
-              class="mt-8"
-              max-height="220"
+              type="primary"
+              text
+              @click="addRow(asRow<TeacherTextbookOption>(row))"
             >
-              <el-table-column prop="isbn" label="ISBN" width="150" />
-              <el-table-column prop="title" label="书名" min-width="160" show-overflow-tooltip />
-              <el-table-column prop="author" label="作者" width="110" />
-              <el-table-column prop="publisher" label="出版社" width="140" />
-              <el-table-column prop="edition" label="版次" width="90" />
-              <el-table-column label="单价" width="100">
-                <template #default="{ row }">{{ formatMoney(row.price) }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <el-tag :type="row.status === 'active' ? 'success' : 'info'" size="small">
-                    {{ row.status === 'active' ? '在库' : '停用' }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="90">
-                <template #default="{ row }">
-                  <el-button
-                    size="small"
-                    type="primary"
-                    text
-                    :disabled="row.status !== 'active'"
-                    @click="addTextbook(row)"
-                  >
-                    选用
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <!-- 明细编辑 -->
-          <el-table :data="activeItems" border stripe>
-            <el-table-column prop="title" label="教材" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="isbn" label="ISBN" width="150" />
-            <el-table-column label="单价" width="110">
-              <template #default="{ row }">{{ formatMoney(row.price) }}</template>
-            </el-table-column>
-            <el-table-column label="数量" width="200">
-              <template #default="{ row, $index }">
-                <el-input-number
-                  :model-value="row.quantity"
-                  :min="0"
-                  :max="quantityMax()"
-                  size="small"
-                  :disabled="!canFill || (activeForm && activeForm.status !== 'rejected')"
-                  @change="
-                    (value: string | number | undefined) => setQuantity($index, Number(value))
-                  "
-                />
-              </template>
-            </el-table-column>
-            <el-table-column label="小计" width="110">
-              <template #default="{ row }">
-                {{ formatMoney(row.price * (row.quantity || 0)) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="90">
-              <template #default="{ $index }">
-                <el-button
-                  size="small"
-                  type="danger"
-                  text
-                  :disabled="!canFill || (activeForm && activeForm.status !== 'rejected')"
-                  @click="removeItem($index)"
-                >
-                  删除
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <div class="flex-between mt-16">
-            <span class="text-muted">
-              合计 {{ totalQuantity() }} 本 / {{ formatMoney(totalAmount()) }}
-            </span>
-            <span v-if="activeForm" class="text-muted">
-              最近更新：{{ formatDateTime(activeForm.updatedAt) }}
-            </span>
-          </div>
-
-          <div v-if="canFill && (!activeForm || activeForm.status === 'rejected')" class="mt-16">
-            <el-input
-              :model-value="remarks[activeKey] || ''"
-              type="textarea"
-              :rows="2"
-              maxlength="200"
-              show-word-limit
-              placeholder="补正说明（选填，200 字以内）"
-              @update:model-value="(value: string | number) => (remarks[activeKey] = String(value))"
-            />
-            <el-button class="mt-8" type="primary" :loading="submitting" @click="submit">
-              {{ activeForm?.status === 'rejected' ? '补正重提' : '提交' }}
+              选用
             </el-button>
-          </div>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="无在库教材，请联系教材室维护教材库" :image-size="70" />
+    </el-card>
 
-          <!-- 关窗遮罩 -->
-          <div v-if="!canFill" class="closed-mask">
-            <div class="closed-mask-inner">
-              <el-icon :size="40"><Lock /></el-icon>
-              <p>本期征订已截止，可查看历史记录</p>
-            </div>
-          </div>
-        </template>
-        <el-empty v-else description="请选择左侧课程 × 班级" :image-size="90" />
-      </div>
+    <!-- 明细 -->
+    <div class="flex-between mb-8">
+      <span class="detail-title">
+        我的填报明细
+        <el-tag v-if="statusMeta" class="ml-8" size="small" type="info">
+          {{ statusMeta.label }}
+        </el-tag>
+      </span>
+      <span v-if="form" class="text-muted">最近提交：{{ formatDateTime(form.submittedAt) }}</span>
     </div>
+
+    <el-table :data="rows" border stripe>
+      <el-table-column type="index" label="#" width="60" />
+      <el-table-column label="课程 · 班级" min-width="200">
+        <template #default="{ row }">{{ labelOf(row).course }}</template>
+      </el-table-column>
+      <el-table-column label="教材" min-width="240" show-overflow-tooltip>
+        <template #default="{ row }">{{ labelOf(row).book }}</template>
+      </el-table-column>
+      <el-table-column label="数量" width="180">
+        <template #default="{ row }">
+          <el-input-number
+            v-model="row.quantity"
+            :min="1"
+            :max="quantityMax(row.classId)"
+            size="small"
+            :disabled="!editable || isLockedByReview"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="90">
+        <template #default="{ row }">
+          <el-button
+            size="small"
+            type="danger"
+            text
+            :disabled="!editable || isLockedByReview"
+            @click="removeRow(row.key)"
+          >
+            删除
+          </el-button>
+        </template>
+      </el-table-column>
+      <template #empty>
+        <el-empty description="尚未添加教材明细" :image-size="70" />
+      </template>
+    </el-table>
+
+    <div class="flex-between mt-16">
+      <span class="text-muted">合计 {{ totalQuantity }} 本</span>
+      <el-button
+        v-if="editable && !isLockedByReview"
+        type="primary"
+        :loading="submitting"
+        :disabled="rows.length === 0"
+        @click="submit"
+      >
+        {{ isCorrectable ? '补正重提' : '提交' }}
+      </el-button>
+    </div>
+
+    <el-alert
+      v-if="!canFill && !isCorrectable"
+      class="mt-16"
+      type="info"
+      :closable="false"
+      show-icon
+      title="本期征订已截止，可查看历史记录（被驳回表单在补正截止前仍可重提）"
+    />
   </div>
 </template>
 
 <style scoped>
-.order-form-layout {
+.picker-bar {
   display: flex;
-  gap: 16px;
-  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
-.order-form-side {
-  width: 260px;
-  flex-shrink: 0;
-  border: 1px solid #e9ebf2;
-  border-radius: 8px;
-  padding: 8px;
-  max-height: 640px;
-  overflow-y: auto;
-}
-
-.side-title {
-  font-size: 13px;
-  color: #8a90a2;
-  padding: 4px 8px 8px;
-}
-
-.side-menu {
-  border-right: none;
-}
-
-.side-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.side-course {
-  font-size: 13px;
+.detail-title {
+  font-size: 15px;
   font-weight: 600;
-}
-
-.side-class {
-  font-size: 12px;
-  color: #8a90a2;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.order-form-main {
-  flex: 1;
-  min-width: 0;
-  position: relative;
-}
-
-.closed-mask {
-  position: absolute;
-  inset: 0;
-  background: rgba(255, 255, 255, 0.82);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-}
-
-.closed-mask-inner {
-  text-align: center;
-  color: #6b7280;
-}
-
-.closed-mask-inner p {
-  margin: 8px 0 0;
-  font-size: 14px;
 }
 </style>

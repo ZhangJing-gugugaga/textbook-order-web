@@ -1,45 +1,22 @@
-import { onUnmounted, ref, type Ref } from 'vue'
+import { onUnmounted, shallowRef } from 'vue'
 
 /**
- * 倒计时（SPEC §7 窗口 store 配合使用）：
- * 目标时间戳由调用方给出（已含服务端时钟偏移修正），本地每秒刷新。
+ * 每秒重算的取值器（SPEC §7 / §8）。
+ *
+ * 用途：把「依赖本地时钟的派生值」（如窗口倒计时）做成响应式，并在组件卸载时
+ * **自动清理计时器**——此前 `WindowBanner` 直接 `setInterval` 且未清理，
+ * 每次登出/登录循环都会新增一个永不销毁的计时器（评审 Q8）。
+ *
+ * @param getValue 每次 tick 后重新求值（内部可读 store getter，时钟偏移已由 store 修正）
+ * @param tickMs   刷新间隔，默认 1000ms
  */
-export function useCountdown(getTargetMs: () => number, tickMs = 1000) {
-  const now = ref(Date.now())
+export function useCountdown<T>(getValue: () => T, tickMs = 1000) {
+  const value = shallowRef<T>(getValue())
   const timer = setInterval(() => {
-    now.value = Date.now()
+    value.value = getValue()
   }, tickMs)
-
   onUnmounted(() => clearInterval(timer))
-
-  const remainMs: Ref<number> = ref(getTargetMs())
-  const refresh = () => {
-    remainMs.value = Math.max(0, getTargetMs())
-  }
-  refresh()
-  const watcher = setInterval(refresh, tickMs)
-  onUnmounted(() => clearInterval(watcher))
-
-  return { now, remainMs, refresh }
+  return value
 }
 
-/** 通用轮询：页面离开即停 */
-export function usePolling(fn: () => void | Promise<void>, intervalMs: number) {
-  let timer: ReturnType<typeof setInterval> | null = null
-  const running = ref(false)
-
-  const start = () => {
-    if (timer) return
-    running.value = true
-    timer = setInterval(() => void fn(), intervalMs)
-  }
-  const stop = () => {
-    if (timer) clearInterval(timer)
-    timer = null
-    running.value = false
-  }
-
-  onUnmounted(stop)
-
-  return { start, stop, running }
-}
+export default useCountdown

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+
 import { useAuthStore } from '@/stores/auth'
 import { useNoticeStore } from '@/stores/notice'
 import { resolveLandingPath } from '@/router/guards'
-import { COPY } from '@/utils/constants'
+import { COPY, USER_NO_PATTERN } from '@/utils/constants'
+import { validateForm } from '@/utils/validate'
 
 /**
  * 登录页（PRD 功能 1）：
@@ -24,13 +25,13 @@ const formRef = ref()
 const rules = {
   userNo: [
     { required: true, message: '请输入账号', trigger: 'blur' },
-    { pattern: /^[A-Za-z0-9]{4,32}$/, message: '请输入正确的账号', trigger: 'blur' },
+    { pattern: USER_NO_PATTERN, message: '请输入正确的账号', trigger: 'blur' },
   ],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 
 async function submit() {
-  await formRef.value?.validate()
+  if (!(await validateForm(formRef.value))) return
   loading.value = true
   try {
     await auth.login(form.userNo.trim(), form.password)

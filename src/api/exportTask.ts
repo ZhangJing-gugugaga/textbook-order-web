@@ -1,17 +1,29 @@
-import { http } from './http'
-import type { ExportTask } from '@/types'
+import { http, postForExport, type ExportDispatch } from './http'
+import type { AsyncExportAccepted, ExportTask } from '@/types'
 
 /**
- * 导出任务（SPEC §6：预估 ≤5000 行同步下载；>5000 行建 export_task + 轮询 +
- * 一次性授权下载链接，Q16）
+ * 导出中心（API.md §3.10 · 四类导出 + 任务查询/一次性下载）。
+ * 同步/异步由后端 export.sync_row_threshold 裁决：前端一律以 Content-Type 分流，
+ * 不预估行数（避免与后端阈值配置漂移）。
  */
-export const exportTaskApi = {
-  create: (data: { name: string; params: Record<string, unknown>; estimatedRows: number }) =>
-    http.post<ExportTask>('/export-tasks', data),
-  progress: (taskId: string) => http.get<ExportTask>(`/export-tasks/${taskId}`),
-  download: (taskId: string) =>
-    http.get<Blob>(`/export-tasks/${taskId}/download`, { responseType: 'blob' }),
-  /** 同步导出（≤5000 行） */
-  syncDownload: (data: { name: string; params: Record<string, unknown> }) =>
-    http.post<Blob>('/exports/sync', data, { responseType: 'blob' }),
+export const exportApi = {
+  /** 教师征订明细（可选 semesterId / collegeId） */
+  orders: (body: { semesterId?: number; collegeId?: number } = {}) =>
+    postForExport<AsyncExportAccepted>('/admin/export/orders', body, '教师征订明细.xlsx'),
+  /** 学生选购汇总 */
+  students: (body: { semesterId?: number } = {}) =>
+    postForExport<AsyncExportAccepted>('/admin/export/students', body, '学生选购汇总.xlsx'),
+  /** 通知汇总（body 必带 taskId） */
+  notice: (body: { taskId: number }) =>
+    postForExport<AsyncExportAccepted>('/admin/export/notice', body, '通知汇总.xlsx'),
+  /** 秘书：本院签字版（学院范围取当前用户 active 学期归属） */
+  signature: (body: { semesterId?: number } = {}) =>
+    postForExport<AsyncExportAccepted>('/secretary/export/signature', body, '教材征订签字版.xlsx'),
 }
+
+/** 导出任务查询与一次性下载 */
+export const exportTaskApi = {
+  progress: (taskId: number) => http.get<ExportTask>(`/export-task/${taskId}`),
+}
+
+export type { ExportDispatch }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+
 import { useConfigStore } from '@/stores/config'
 import { useTaskStore } from '@/stores/task'
 import { triggerBrowserDownload } from '@/api/http'
@@ -9,51 +9,58 @@ import type { ImportBatch } from '@/types'
 
 /**
  * Excel 异步导入（PRD 功能 5 / SPEC §8）：
- * 上传（.xlsx ≤10MB）→ 批次轮询进度 → 结果摘要 + 错误明细下载 + 前 N 行预览。
+ * 上传（.xlsx ≤ import.max_file_mb）→ 批次轮询进度（/api/batch/{id}）→
+ * 结果摘要 + 错误明细下载（/api/batch/{id}/errors）+ 错误行预览。
  * 禁用前端解析；导入逻辑全部在服务端。
  */
 const emit = defineEmits<{
-  (e: 'uploaded', batchId: string): void
+  (e: 'uploaded', batchId: number): void
   (e: 'finished', batch: ImportBatch): void
 }>()
 
 const props = defineProps<{
   title: string
-  uploader: (file: File) => Promise<{ batchId: string }>
-  poller: (batchId: string) => Promise<ImportBatch>
-  errorDownloader?: (batchId: string) => Promise<Blob>
-  templateUrl?: string
+  uploader: (file: File) => Promise<{ batchId: number }>
+  poller: (batchId: number) => Promise<ImportBatch>
+  errorDownloader?: (batchId: number) => Promise<{ blob: Blob; fileName: string }>
+  /** 模板下载（后端文件流，需带鉴权头，故用按钮而非 <a href>） */
+  templateDownloader?: () => Promise<{ blob: Blob; fileName: string }>
 }>()
 
 const config = useConfigStore()
 const task = useTaskStore()
 
 const uploading = ref(false)
-const batchId = ref('')
+const batchId = ref<number | null>(null)
 const state = computed(() => (batchId.value ? task.imports[batchId.value] : undefined))
 const batch = computed(() => state.value?.data ?? null)
 const polling = computed(() => state.value?.polling ?? false)
 const progress = computed(() => batch.value?.progressPct ?? 0)
+const errorRows = computed(() => batch.value?.errorDetail ?? [])
+/** 轮询失败：必须展示并提供重试，否则界面表现为进度条永久卡住（评审 Q6） */
+const pollError = computed(() => state.value?.error ?? '')
 
 watch(
   () => batch.value?.status,
   (status) => {
-    if (status && status !== 'parsing' && batch.value) emit('finished', batch.value)
+    if (status && status !== 'running' && batch.value) emit('finished', batch.value)
   },
 )
 
 const statusText = computed(() => {
   if (!batch.value) return ''
-  if (batch.value.status === 'parsing') return `正在解析，已完成 ${batch.value.progressPct}%`
-  if (batch.value.status === 'failed') return `解析失败：${batch.value.message || '未知原因'}`
-  return `导入完成：成功 ${batch.value.successRows} 行，失败 ${batch.value.errorRows} 行`
+  if (batch.value.status === 'running') return `正在解析，已完成 ${batch.value.progressPct ?? 0}%`
+  if (batch.value.status === 'failed') return '解析失败，请下载错误明细核对后重试'
+  const ok = batch.value.okCount ?? 0
+  const bad = batch.value.errorCount ?? 0
+  return `导入完成：成功 ${ok} 行，失败 ${bad} 行`
 })
 
 const statusType = computed<'info' | 'success' | 'warning' | 'error'>(() => {
   if (!batch.value) return 'info'
-  if (batch.value.status === 'parsing') return 'info'
+  if (batch.value.status === 'running') return 'info'
   if (batch.value.status === 'failed') return 'error'
-  return batch.value.errorRows > 0 ? 'warning' : 'success'
+  return (batch.value.errorCount ?? 0) > 0 ? 'warning' : 'success'
 })
 
 onUnmounted(() => {
@@ -86,16 +93,31 @@ async function handleFile(file: File) {
 async function downloadErrors() {
   if (!batchId.value || !props.errorDownloader) return
   try {
-    const blob = await props.errorDownloader(batchId.value)
-    triggerBrowserDownload(blob, `导入错误明细-${batchId.value}.xlsx`)
-  } catch {
-    ElMessage.error('导出失败请重试')
+    const file = await props.errorDownloader(batchId.value)
+    triggerBrowserDownload(file.blob, file.fileName)
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || '错误明细下载失败')
   }
+}
+
+async function downloadTemplate() {
+  if (!props.templateDownloader) return
+  try {
+    const file = await props.templateDownloader()
+    triggerBrowserDownload(file.blob, file.fileName)
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || '模板下载失败')
+  }
+}
+
+/** 轮询失败重试：再次 poll 会清空 error 并从初始间隔重新开始 */
+function retryPolling() {
+  if (batchId.value) task.pollImport(batchId.value, props.poller)
 }
 
 function reset() {
   if (batchId.value) task.stopImport(batchId.value)
-  batchId.value = ''
+  batchId.value = null
 }
 
 defineExpose({ reset, batchId })
@@ -105,7 +127,9 @@ defineExpose({ reset, batchId })
   <div class="import-wizard">
     <div class="flex-between mb-8">
       <span class="import-wizard-title">{{ title }}</span>
-      <a v-if="templateUrl" :href="templateUrl" target="_blank" rel="noopener">下载导入模板</a>
+      <el-button v-if="templateDownloader" link type="primary" @click="downloadTemplate">
+        下载导入模板
+      </el-button>
     </div>
 
     <el-upload
@@ -141,7 +165,18 @@ defineExpose({ reset, batchId })
         :stroke-width="14"
       />
       <el-alert
-        v-if="batch"
+        v-if="pollError"
+        class="mt-8"
+        :title="`进度查询失败：${pollError}`"
+        type="error"
+        :closable="false"
+        show-icon
+        data-testid="import-poll-error"
+      >
+        <el-button class="mt-8" size="small" @click="retryPolling">重试</el-button>
+      </el-alert>
+      <el-alert
+        v-else-if="batch"
         class="mt-8"
         :title="statusText"
         :type="statusType"
@@ -149,14 +184,14 @@ defineExpose({ reset, batchId })
         show-icon
       />
 
-      <template v-if="batch && batch.status !== 'parsing' && batch.errorPreview.length">
+      <template v-if="batch && batch.status !== 'running' && errorRows.length">
         <div class="flex-between mt-16 mb-8">
-          <span class="text-muted">错误行预览（前 {{ batch.errorPreview.length }} 行）</span>
+          <span class="text-muted">错误行预览（前 {{ errorRows.length }} 行）</span>
           <el-button v-if="errorDownloader" size="small" @click="downloadErrors">
             下载错误明细
           </el-button>
         </div>
-        <el-table :data="batch.errorPreview" size="small" border stripe max-height="240">
+        <el-table :data="errorRows" size="small" border stripe max-height="240">
           <el-table-column prop="row" label="行号" width="90" />
           <el-table-column prop="reason" label="错误原因" show-overflow-tooltip />
         </el-table>

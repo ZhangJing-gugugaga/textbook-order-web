@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useNoticeStore } from '@/stores/notice'

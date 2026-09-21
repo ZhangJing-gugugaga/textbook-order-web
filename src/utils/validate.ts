@@ -1,3 +1,22 @@
+import type { FormInstance } from 'element-plus'
+
+/**
+ * 触发表单校验。
+ *
+ * Element Plus 的 `validate()` 在校验不通过时会 **reject**；直接写
+ * `await formRef.value?.validate()` 会让 rejection 逃出函数：
+ * 模板事件触发时被 Vue 记为控制台错误，脚本内部调用时成为未处理 rejection（评审 Q7）。
+ * 统一走本函数：未通过即返回 false，调用方写 `if (!(await validateForm(ref))) return`。
+ */
+export async function validateForm(form: FormInstance | undefined): Promise<boolean> {
+  if (!form) return true
+  try {
+    return (await form.validate()) !== false
+  } catch {
+    return false
+  }
+}
+
 /** 窗口期校验规则（PRD 征订窗口管理页字段规范） */
 
 /** 窗口开始必须早于结束 */

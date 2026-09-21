@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox, FormInstance } from 'element-plus'
+import type { FormInstance } from 'element-plus'
 import { semesterApi } from '@/api/semester'
+import PermButton from '@/components/PermButton.vue'
+import { DATETIME_FORMAT, PERMISSIONS } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
-import { validateExtendEnd, validateWindowRange } from '@/utils/validate'
-import type { Semester, WindowChangeRecord } from '@/types'
+import { validateExtendEnd, validateForm, validateWindowRange } from '@/utils/validate'
+import type { AuditLog, Semester } from '@/types'
 
 /**
- * 学期生命周期面板（SPEC §8 / Q1）：
- * draft→active 激活二次确认（失败回退提示）、归档；同一时刻仅一个 active 的前端校验；
- * 窗口操作（立即开启 / 提前截止 / 延长）每次二次确认并提示将自动通知全员。
+ * 学期生命周期面板（SPEC §8 / Q1 / API.md §3.2）：
+ * draft→active 激活二次确认（body 带 version 乐观锁，冲突回退提示）、归档；
+ * 窗口设置/立即开启/提前截止/无限次延长，每次二次确认并提示将自动通知全员；
+ * 变更记录来自审计（GET /admin/semester/{id}/window/changes）。
  */
 const props = defineProps<{ semester: Semester }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const saving = ref(false)
-const changes = ref<WindowChangeRecord[]>([])
+const changes = ref<AuditLog[]>([])
+
+/** 后端时间格式统一 yyyy-MM-dd HH:mm:ss（spring.mvc.format.date-time） */
 
 const form = reactive({
   windowStart: props.semester.windowStart,
@@ -31,11 +36,14 @@ const rules = {
 }
 
 async function loadChanges() {
-  changes.value = await semesterApi.changes(props.semester.id).catch(() => [])
+  const result = await semesterApi
+    .changes(props.semester.id, { page: 1, size: 50 })
+    .catch(() => null)
+  changes.value = result?.list ?? []
 }
 
 async function saveWindow() {
-  await formRef.value?.validate()
+  if (!(await validateForm(formRef.value))) return
   const rangeError = validateWindowRange(form.windowStart, form.windowEnd)
   if (rangeError) {
     ElMessage.error(rangeError)
@@ -43,7 +51,7 @@ async function saveWindow() {
   }
   saving.value = true
   try {
-    await semesterApi.update(props.semester.id, { ...form })
+    await semesterApi.setWindow(props.semester.id, { ...form })
     ElMessage.success('已生效，通知将自动发送给全员')
     emit('changed')
     await loadChanges()
@@ -66,12 +74,13 @@ async function activate() {
   }
   saving.value = true
   try {
-    await semesterApi.activate(props.semester.id)
+    // 双缓冲原子切换：version 原样回传，不匹配 → 409 STATE_CONFLICT
+    await semesterApi.activate(props.semester.id, props.semester.version)
     ElMessage.success('已生效，通知将自动发送给全员')
     emit('changed')
     await loadChanges()
   } catch (error) {
-    // 原子切换失败回退提示
+    // 原子切换失败回退提示（含 version 冲突）
     ElMessage.error((error as Error)?.message || '切换失败，请重试')
     emit('changed')
   } finally {
@@ -165,15 +174,41 @@ async function submitExtend() {
   }
 }
 
-function actionLabel(action: WindowChangeRecord['action']) {
+/** 审计 action → 中文动作名 */
+function actionLabel(action: string) {
   const map: Record<string, string> = {
-    open: '开启窗口',
-    close: '截止窗口',
-    extend: '延长窗口',
-    activate: '激活学期',
-    archive: '归档学期',
+    WINDOW_OPEN: '开启窗口',
+    WINDOW_CLOSE: '截止窗口',
+    WINDOW_EXTEND: '延长窗口',
+    WINDOW_SET: '设置窗口',
+    SEMESTER_ACTIVATE: '激活学期',
+    SEMESTER_ARCHIVE: '归档学期',
+    UPDATE: '设置窗口',
+    ACTIVATE: '激活学期',
+    ARCHIVE: '归档学期',
   }
   return map[action] ?? action
+}
+
+/** 审计明细 → 原值 → 新值 摘要 */
+function detailText(detail: Record<string, unknown> | undefined) {
+  if (!detail) return '—'
+  const from = detail.before ?? detail.oldWindowEnd ?? detail.from
+  const to = detail.after ?? detail.windowEnd ?? detail.to
+  const render = (v: unknown) =>
+    v === undefined || v === null
+      ? '—'
+      : typeof v === 'object'
+        ? Object.entries(v as Record<string, unknown>)
+            .map(([k, val]) => `${k}=${val}`)
+            .join(', ')
+        : String(v)
+  if (from === undefined && to === undefined) {
+    return Object.entries(detail)
+      .map(([k, val]) => `${k}=${render(val)}`)
+      .join('；')
+  }
+  return `${render(from)} → ${render(to)}`
 }
 
 loadChanges()
@@ -187,36 +222,69 @@ loadChanges()
         <el-tag
           class="ml-8"
           size="small"
-          :type="
-            semester.status === 'active' ? 'success' : semester.status === 'draft' ? 'info' : 'info'
-          "
+          :type="semester.activeStatus === 'active' ? 'success' : 'info'"
         >
           {{
-            semester.status === 'active'
-              ? '进行中'
-              : semester.status === 'draft'
-                ? '草稿'
+            semester.activeStatus === 'active'
+              ? '当前学期'
+              : semester.activeStatus === 'draft'
+                ? '可导入'
                 : '已归档'
+          }}
+        </el-tag>
+        <el-tag
+          class="ml-8"
+          size="small"
+          :type="semester.windowStatus === 'open' ? 'success' : 'warning'"
+        >
+          {{
+            semester.windowStatus === 'open'
+              ? '窗口进行中'
+              : semester.windowStatus === 'closed'
+                ? '窗口已截止'
+                : '窗口未开始'
           }}
         </el-tag>
       </div>
       <div class="app-table-actions">
-        <el-button
-          v-if="semester.status === 'draft'"
+        <PermButton
+          v-if="semester.activeStatus === 'draft'"
+          :code="PERMISSIONS.SEMESTER_MANAGE"
           type="primary"
           :loading="saving"
           @click="activate"
         >
           激活学期
-        </el-button>
-        <template v-if="semester.status === 'active'">
-          <el-button :loading="saving" @click="openWindow">立即开启</el-button>
-          <el-button type="warning" :loading="saving" @click="closeWindow">提前截止</el-button>
-          <el-button type="primary" :loading="saving" @click="extendVisible = true">延长</el-button>
+        </PermButton>
+        <template v-if="semester.activeStatus === 'active'">
+          <PermButton :code="PERMISSIONS.WINDOW_MANAGE" :loading="saving" @click="openWindow">
+            立即开启
+          </PermButton>
+          <PermButton
+            :code="PERMISSIONS.WINDOW_MANAGE"
+            type="warning"
+            :loading="saving"
+            @click="closeWindow"
+          >
+            提前截止
+          </PermButton>
+          <PermButton
+            :code="PERMISSIONS.WINDOW_MANAGE"
+            type="primary"
+            :loading="saving"
+            @click="extendVisible = true"
+          >
+            延长
+          </PermButton>
         </template>
-        <el-button v-if="semester.status !== 'archived'" :loading="saving" @click="archive">
+        <PermButton
+          v-if="semester.activeStatus !== 'archived'"
+          :code="PERMISSIONS.SEMESTER_MANAGE"
+          :loading="saving"
+          @click="archive"
+        >
           归档
-        </el-button>
+        </PermButton>
       </div>
     </div>
 
@@ -225,7 +293,7 @@ loadChanges()
         <el-date-picker
           v-model="form.windowStart"
           type="datetime"
-          value-format="YYYY-MM-DDTHH:mm:ss"
+          :value-format="DATETIME_FORMAT"
           placeholder="选择开始时间"
         />
       </el-form-item>
@@ -233,22 +301,30 @@ loadChanges()
         <el-date-picker
           v-model="form.windowEnd"
           type="datetime"
-          value-format="YYYY-MM-DDTHH:mm:ss"
+          :value-format="DATETIME_FORMAT"
           placeholder="选择截止时间"
         />
       </el-form-item>
       <el-form-item label="自动开启">
-        <el-switch v-model="form.autoOpen" />
+        <el-switch v-model="form.autoOpen" :active-value="1" :inactive-value="0" />
       </el-form-item>
       <el-form-item label="自动截止">
-        <el-switch v-model="form.autoClose" />
+        <el-switch v-model="form.autoClose" :active-value="1" :inactive-value="0" />
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" :loading="saving" @click="saveWindow">保存窗口设置</el-button>
+        <PermButton
+          :code="PERMISSIONS.WINDOW_MANAGE"
+          type="primary"
+          :loading="saving"
+          @click="saveWindow"
+        >
+          保存窗口设置
+        </PermButton>
       </el-form-item>
     </el-form>
     <div class="text-muted mb-16">
-      天数任意设置；窗口开始必须早于结束；同一时刻仅一个 active 学期。
+      天数任意设置；窗口开始必须早于截止；同一时刻仅一个 active
+      学期；置「自动」为关则到点不动，保留手动控制。
     </div>
 
     <el-divider content-position="left">变更记录</el-divider>
@@ -257,14 +333,14 @@ loadChanges()
       <el-table-column label="操作" width="120">
         <template #default="{ row }">{{ actionLabel(row.action) }}</template>
       </el-table-column>
-      <el-table-column prop="operatorName" label="操作人" width="120" />
-      <el-table-column label="时间" width="170">
-        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+      <el-table-column label="操作人" width="120">
+        <template #default="{ row }">{{ row.userNo || '—' }}</template>
       </el-table-column>
-      <el-table-column label="原值 → 新值" min-width="220">
-        <template #default="{ row }">
-          {{ row.fromValue || '—' }} → {{ row.toValue || '—' }}
-        </template>
+      <el-table-column label="时间" width="180">
+        <template #default="{ row }">{{ formatDateTime(row.at) }}</template>
+      </el-table-column>
+      <el-table-column label="原值 → 新值" min-width="260">
+        <template #default="{ row }">{{ detailText(row.detailJson) }}</template>
       </el-table-column>
     </el-table>
 
@@ -280,7 +356,7 @@ loadChanges()
           <el-date-picker
             v-model="extendForm.windowEnd"
             type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
+            :value-format="DATETIME_FORMAT"
             placeholder="必须晚于当前时间"
             style="width: 100%"
           />
@@ -294,7 +370,14 @@ loadChanges()
       />
       <template #footer>
         <el-button @click="extendVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitExtend">确认延长</el-button>
+        <PermButton
+          :code="PERMISSIONS.WINDOW_MANAGE"
+          type="primary"
+          :loading="saving"
+          @click="submitExtend"
+        >
+          确认延长
+        </PermButton>
       </template>
     </el-dialog>
   </div>

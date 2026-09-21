@@ -3,17 +3,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import SemesterLifecyclePanel from '@/components/SemesterLifecyclePanel.vue'
-import type { Semester } from '@/types'
+import { useAuthStore } from '@/stores/auth'
+import { PERMISSIONS } from '@/utils/constants'
+import type { AuditLog, PageResult, Semester } from '@/types'
 
 /**
- * SemesterLifecyclePanel：激活 / 回退（SPEC §10 / 02 §6.2 Q1）：
- * draft→active 激活二次确认；原子切换失败回退提示；同一时刻仅一个 active 的前端校验。
+ * SemesterLifecyclePanel：激活 / 回退（SPEC §10 / API.md §3.2）：
+ * draft→active 激活二次确认（body 带 version 乐观锁）；原子切换失败回退提示；
+ * 窗口变更记录来自审计（分页返回）。
  * 窗口期字段校验规则见 tests/unit/validate.spec.ts。
  */
 vi.mock('@/api/semester', () => ({
   semesterApi: {
     list: vi.fn(),
     update: vi.fn(),
+    setWindow: vi.fn(),
     activate: vi.fn(),
     archive: vi.fn(),
     openWindow: vi.fn(),
@@ -28,21 +32,42 @@ import { semesterApi } from '@/api/semester'
 
 const draft: Semester = {
   id: 2,
-  name: '2026-2027 学年第二学期（预备）',
+  name: '2026-2027学年春季学期',
   startDate: '2027-02-20',
   endDate: '2027-07-10',
-  status: 'draft',
-  windowStart: '2027-03-01T08:00:00',
-  windowEnd: '2027-03-20T18:00:00',
-  autoOpen: true,
-  autoClose: true,
-  createdAt: '2026-09-16T08:00:00',
+  windowStart: '2027-03-01 08:00:00',
+  windowEnd: '2027-03-20 18:00:00',
+  channelOpen: 0,
+  autoOpen: 1,
+  autoClose: 1,
+  windowStatus: 'not_open',
+  activeStatus: 'draft',
+  version: 0,
 }
 
+function pageOf<T>(list: T[]): PageResult<T> {
+  return { list, page: 1, size: 50, total: list.length, totalPages: 1 }
+}
+
+const changeLogs: AuditLog[] = [
+  {
+    id: 1,
+    action: 'WINDOW_EXTEND',
+    resource: 'semester',
+    resourceId: '2',
+    detailJson: { before: '2026-09-30 18:00:00', after: '2026-10-10 18:00:00' },
+    at: '2026-09-20 09:00:00',
+  },
+]
+
 function mountPanel(semester: Semester) {
+  // 面板写操作按钮统一走 PermButton（无权限码移除 DOM）：先给会话注入学期 / 窗口
+  // 管理权限码，用例聚焦生命周期行为本身；无权限时按钮不渲染见 PermButton 契约。
+  const pinia = createPinia()
+  useAuthStore(pinia).permissions = [PERMISSIONS.SEMESTER_MANAGE, PERMISSIONS.WINDOW_MANAGE]
   return mount(SemesterLifecyclePanel, {
     props: { semester },
-    global: { plugins: [ElementPlus, createPinia()] },
+    global: { plugins: [ElementPlus, pinia] },
     attachTo: document.body,
   })
 }
@@ -50,17 +75,17 @@ function mountPanel(semester: Semester) {
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
-  vi.mocked(semesterApi.changes).mockResolvedValue([])
-  vi.mocked(semesterApi.update).mockResolvedValue(draft)
-  vi.mocked(semesterApi.activate).mockResolvedValue({ ...draft, status: 'active' })
-  vi.mocked(semesterApi.archive).mockResolvedValue({ ...draft, status: 'archived' })
+  vi.mocked(semesterApi.changes).mockResolvedValue(pageOf(changeLogs))
+  vi.mocked(semesterApi.setWindow).mockResolvedValue(draft)
+  vi.mocked(semesterApi.activate).mockResolvedValue({ ...draft, activeStatus: 'active' })
+  vi.mocked(semesterApi.archive).mockResolvedValue(undefined)
   document.body.innerHTML = ''
 })
 
 describe('SemesterLifecyclePanel 学期生命周期', () => {
   it('draft 学期展示激活入口，激活需二次确认', async () => {
     const wrapper = mountPanel(draft)
-    expect(wrapper.text()).toContain('草稿')
+    expect(wrapper.text()).toContain('可导入')
 
     const activateButton = wrapper.findAll('button').find((b) => b.text() === '激活学期')
     expect(activateButton).toBeTruthy()
@@ -74,13 +99,13 @@ describe('SemesterLifecyclePanel 学期生命周期', () => {
     wrapper.unmount()
   })
 
-  it('激活成功后通知 changed 事件并刷新变更记录', async () => {
+  it('激活成功：带 version 乐观锁调用并通知 changed 事件', async () => {
     const wrapper = mountPanel(draft)
     const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
 
     const activateButton = wrapper.findAll('button').find((b) => b.text() === '激活学期')
     await activateButton!.trigger('click')
-    await vi.waitFor(() => expect(semesterApi.activate).toHaveBeenCalledWith(2))
+    await vi.waitFor(() => expect(semesterApi.activate).toHaveBeenCalledWith(2, 0))
     await vi.waitFor(() => expect(wrapper.emitted('changed')).toBeTruthy())
 
     confirmSpy.mockRestore()
@@ -88,9 +113,7 @@ describe('SemesterLifecyclePanel 学期生命周期', () => {
   })
 
   it('激活失败（原子切换回退）：提示重试并回退展示', async () => {
-    vi.mocked(semesterApi.activate).mockRejectedValue(
-      new Error('同一时刻仅允许一个 active 学期，请先归档当前学期'),
-    )
+    vi.mocked(semesterApi.activate).mockRejectedValue(new Error('存在更新的学期状态，请刷新'))
     const messageSpy = vi.spyOn(ElMessage, 'error')
     const wrapper = mountPanel(draft)
     const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
@@ -99,9 +122,7 @@ describe('SemesterLifecyclePanel 学期生命周期', () => {
     await activateButton!.trigger('click')
     await vi.waitFor(() => expect(semesterApi.activate).toHaveBeenCalled())
     // 失败后回退提示 + 通知父级刷新
-    await vi.waitFor(() =>
-      expect(messageSpy).toHaveBeenCalledWith('同一时刻仅允许一个 active 学期，请先归档当前学期'),
-    )
+    await vi.waitFor(() => expect(messageSpy).toHaveBeenCalledWith('存在更新的学期状态，请刷新'))
     expect(wrapper.emitted('changed')).toBeTruthy()
 
     confirmSpy.mockRestore()
@@ -110,7 +131,7 @@ describe('SemesterLifecyclePanel 学期生命周期', () => {
   })
 
   it('active 学期提供立即开启 / 提前截止 / 延长 / 归档入口', async () => {
-    const wrapper = mountPanel({ ...draft, status: 'active' })
+    const wrapper = mountPanel({ ...draft, activeStatus: 'active', windowStatus: 'open' })
     const labels = wrapper.findAll('button').map((b) => b.text())
     expect(labels).toContain('立即开启')
     expect(labels).toContain('提前截止')
@@ -128,21 +149,10 @@ describe('SemesterLifecyclePanel 学期生命周期', () => {
     wrapper.unmount()
   })
 
-  it('展示窗口变更记录', async () => {
-    vi.mocked(semesterApi.changes).mockResolvedValue([
-      {
-        id: 1,
-        semesterId: 2,
-        action: 'extend',
-        operatorName: '张教材',
-        createdAt: '2026-09-20 09:00:00',
-        fromValue: '2026-09-30T18:00:00',
-        toValue: '2026-10-10T18:00:00',
-      },
-    ])
+  it('展示窗口变更记录（来自审计）', async () => {
     const wrapper = mountPanel(draft)
     await vi.waitFor(() => expect(wrapper.text()).toContain('延长窗口'))
-    expect(wrapper.text()).toContain('张教材')
+    expect(wrapper.text()).toContain('2026-10-10 18:00:00')
     wrapper.unmount()
   })
 })

@@ -1,47 +1,35 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { FieldCheckItem } from '@/types'
+import type { FieldCheckIssue } from '@/types'
 
 /**
  * 字段审查回显（SPEC §8 / O14）：
- * 按 field / rule / message 逐字段标红 + 修复提示。
+ * 后端 FIELD_CHECK_FAILED 的 data 为逐项 [{field, rule, message}]（契约冻结回显格式），
+ * 仅含未通过项；此处按 field / rule / message 逐字段标红 + 修复提示。
  */
 const props = defineProps<{
-  items: FieldCheckItem[] | null
+  items: FieldCheckIssue[] | null
   title?: string
 }>()
 
-const failed = computed(() => (props.items ?? []).filter((item) => !item.passed))
-const passed = computed(() => (props.items ?? []).filter((item) => item.passed))
+const issues = computed(() => props.items ?? [])
 const summary = computed(() => {
-  if (!props.items) return ''
-  if (failed.value.length === 0) return `字段审查通过（${passed.value.length} 项）`
-  return `存在 ${failed.value.length} 项问题，请按提示修复后重新提交`
+  if (!props.items || props.items.length === 0) return ''
+  return `存在 ${props.items.length} 项问题，请按提示修复后重新提交`
 })
 </script>
 
 <template>
-  <div v-if="items && items.length" class="field-check-result">
+  <div v-if="issues.length" class="field-check-result">
     <el-alert
-      :title="summary"
-      :type="failed.length ? 'error' : 'success'"
+      :title="title ? `${title}：${summary}` : summary"
+      type="error"
       :closable="false"
       show-icon
-    >
-      <template v-if="title" #title>
-        <span>{{ title }}：{{ summary }}</span>
-      </template>
-    </el-alert>
+    />
     <ul class="field-check-list">
-      <li
-        v-for="item in items"
-        :key="`${item.field}-${item.rule}`"
-        :class="item.passed ? 'ok' : 'bad'"
-      >
-        <el-icon>
-          <CircleCheckFilled v-if="item.passed" />
-          <CircleCloseFilled v-else />
-        </el-icon>
+      <li v-for="item in issues" :key="`${item.field}-${item.rule}`" class="bad">
+        <el-icon><CircleCloseFilled /></el-icon>
         <span class="field-name">{{ item.field }}</span>
         <span class="field-rule">[{{ item.rule }}]</span>
         <span class="field-message">{{ item.message }}</span>

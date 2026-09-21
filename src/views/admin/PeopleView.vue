@@ -1,113 +1,98 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { peopleApi, batchApi } from '@/api/people'
+import { onMounted, reactive, ref } from 'vue'
+
+import { accountsApi, batchApi } from '@/api/people'
 import { changeApi } from '@/api/change'
+import { orgApi } from '@/api/semester'
+import { downloadErrorDetail } from '@/api/http'
 import ImportWizard from '@/components/ImportWizard.vue'
-import FieldCheckResult from '@/components/FieldCheckResult.vue'
-import { COPY } from '@/utils/constants'
-import type { ChangeRequest, Person } from '@/types'
+import PermButton from '@/components/PermButton.vue'
+import ServerTable from '@/components/ServerTable.vue'
+import { useWindowStore } from '@/stores/window'
+import {
+  CHANGE_STATUS_META,
+  CHANGE_TYPE_LABELS,
+  COPY,
+  PERMISSIONS,
+  ROLE_LABELS,
+  statusMetaOf,
+} from '@/utils/constants'
+import { formatDateTime } from '@/utils/format'
+import { asRow } from '@/utils/table'
+import type { ChangeRequestListItem, College } from '@/types'
 
 /**
- * 学生/教师管理（PRD 教材室-学生/教师管理）：
- * 全量 Excel 异步导入（批次进度 + 错误行下载）、检索；
- * 异动两级审批工作台：系统字段审查结果只读展示 → 内容审核通过/驳回（理由必填）。
+ * 学生/教师管理 + 异动审批工作台（PRD 教材室-学生/教师管理 / API.md §3.5 §3.8）：
+ * 名册检索（GET /api/admin/user?roleCode=）+ 名单 Excel 异步导入（批次进度 + 错误明细）；
+ * 异动审批（GET /api/admin/change）：系统字段审查不过的记录直接落 rejected，
+ * 因此进入「待审批」即代表字段审查已通过，审批只做内容审核。
+ * 两个列表的分页与空/载/错三态均由 ServerTable 基座承担（SPEC §8）。
  */
 const activeTab = ref<'people' | 'change'>('people')
-const personType = ref<'student' | 'teacher'>('student')
-const keyword = ref('')
-const rows = ref<Person[]>([])
-const total = ref(0)
-const page = ref(1)
-const size = ref(10)
-const loading = ref(false)
-const peopleError = ref('')
 
-async function loadPeople() {
-  loading.value = true
-  peopleError.value = ''
-  try {
-    const result = await peopleApi.page({
-      type: personType.value,
-      keyword: keyword.value || undefined,
-      page: page.value,
-      size: size.value,
-    })
-    rows.value = result.list
-    total.value = result.total
-  } catch (error) {
-    rows.value = []
-    total.value = 0
-    peopleError.value = (error as Error)?.message || COPY.FAILED
-  } finally {
-    loading.value = false
-  }
+/* ---------------- 名册 ---------------- */
+const personType = ref<'student' | 'teacher'>('student')
+const peopleFilters = reactive({ keyword: '' })
+const peopleTableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
+const colleges = ref<College[]>([])
+const semesterId = ref<number | null>(null)
+
+/** 筛选条件 → 接口参数（空串不下发），分页由 ServerTable 注入 */
+function fetchPeoplePage({ page, size }: { page: number; size: number }) {
+  return accountsApi.page({
+    roleCode: personType.value === 'student' ? 'STUDENT' : 'TEACHER',
+    keyword: peopleFilters.keyword || undefined,
+    page,
+    size,
+  })
 }
 
 function searchPeople() {
-  page.value = 1
-  void loadPeople()
+  peopleTableRef.value?.reload()
 }
 
 /* ---------------- 异动审批工作台 ---------------- */
-const changeRows = ref<ChangeRequest[]>([])
-const changeTotal = ref(0)
-const changePage = ref(1)
-const changeSize = ref(10)
-const changeStatus = ref('pending')
-const changeKeyword = ref('')
-const changeLoading = ref(false)
-const changeError = ref('')
-const selected = ref<ChangeRequest | null>(null)
+const changeFilters = reactive({ status: 'pending_review', batchNo: '' })
+const changeTableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
+const selected = ref<ChangeRequestListItem | null>(null)
 const detailVisible = ref(false)
 const rejectVisible = ref(false)
-const rejectComment = ref('')
+const rejectReason = ref('')
 const processing = ref(false)
-const selectedIds = ref<number[]>([])
 const batchRejectVisible = ref(false)
-const batchRejectComment = ref('')
+const batchRejectReason = ref('')
+const batchAction = ref<ChangeRequestListItem | null>(null)
 
-async function loadChanges() {
-  changeLoading.value = true
-  changeError.value = ''
-  try {
-    const result = await changeApi.page({
-      status: changeStatus.value || undefined,
-      keyword: changeKeyword.value || undefined,
-      page: changePage.value,
-      size: changeSize.value,
-    })
-    changeRows.value = result.list
-    changeTotal.value = result.total
-  } catch (error) {
-    changeRows.value = []
-    changeTotal.value = 0
-    changeError.value = (error as Error)?.message || COPY.FAILED
-  } finally {
-    changeLoading.value = false
-  }
+/** 筛选条件 → 接口参数（空串不下发），分页由 ServerTable 注入 */
+function fetchChangesPage({ page, size }: { page: number; size: number }) {
+  return changeApi.page({
+    status: changeFilters.status || undefined,
+    batchNo: changeFilters.batchNo || undefined,
+    page,
+    size,
+  })
 }
 
 function searchChanges() {
-  changePage.value = 1
-  void loadChanges()
+  changeTableRef.value?.reload()
 }
 
-function openDetail(row: ChangeRequest) {
+function openDetail(row: ChangeRequestListItem) {
   selected.value = row
   detailVisible.value = true
 }
 
-function openReject(row: ChangeRequest) {
+function openReject(row: ChangeRequestListItem) {
   selected.value = row
-  rejectComment.value = ''
+  rejectReason.value = ''
   rejectVisible.value = true
 }
 
-async function approve(row: ChangeRequest) {
+/** 逐条审批：通过后对 active 学期立即生效 */
+async function approve(row: ChangeRequestListItem) {
   try {
     await ElMessageBox.confirm(
-      `确认通过 ${row.studentName}（${row.studentNo}）的异动申请？`,
+      `确认通过 ${row.targetUserName || row.targetUserNo} 的异动申请？通过后对当前学期立即生效。`,
       '内容审核通过',
       { type: 'warning' },
     )
@@ -116,10 +101,10 @@ async function approve(row: ChangeRequest) {
   }
   processing.value = true
   try {
-    await changeApi.approve(row.id)
-    ElMessage.success('已复核通过')
+    await changeApi.review(row.id, { action: 'pass' })
+    ElMessage.success('已复核通过，立即生效')
     detailVisible.value = false
-    await loadChanges()
+    changeTableRef.value?.reload(false)
   } catch (error) {
     ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
@@ -128,23 +113,23 @@ async function approve(row: ChangeRequest) {
 }
 
 async function submitReject() {
-  const comment = rejectComment.value.trim()
-  if (!comment) {
+  const reason = rejectReason.value.trim()
+  if (!reason) {
     ElMessage.error('驳回理由必填')
     return
   }
-  if (comment.length > 200) {
+  if (reason.length > 200) {
     ElMessage.error('驳回理由不超过 200 字')
     return
   }
   if (!selected.value) return
   processing.value = true
   try {
-    await changeApi.reject(selected.value.id, comment)
-    ElMessage.success('已驳回，申请人可补正后重新提交')
+    await changeApi.review(selected.value.id, { action: 'reject', reason })
+    ElMessage.success('已驳回')
     rejectVisible.value = false
     detailVisible.value = false
-    await loadChanges()
+    changeTableRef.value?.reload(false)
   } catch (error) {
     ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
@@ -152,52 +137,35 @@ async function submitReject() {
   }
 }
 
-/* ---------------- 批量通过 / 批量驳回（Q10） ---------------- */
-async function batchApprove() {
-  if (selectedIds.value.length === 0) return
-  try {
-    await ElMessageBox.confirm(
-      `确认批量通过 ${selectedIds.value.length} 条异动申请？`,
-      '批量通过',
-      {
-        type: 'warning',
-      },
-    )
-  } catch {
+/* ---------------- 按批次批量处理（后端仅支持按 batchNo） ---------------- */
+function openBatch(row: ChangeRequestListItem) {
+  batchAction.value = row
+  batchRejectReason.value = ''
+  batchRejectVisible.value = true
+}
+
+async function submitBatch(action: 'pass' | 'reject') {
+  const batchNo = batchAction.value?.batchNo
+  if (!batchNo) {
+    ElMessage.error('该记录不属于任何批次')
     return
   }
-  processing.value = true
-  try {
-    await changeApi.batchApprove(selectedIds.value)
-    ElMessage.success('已批量通过')
-    selectedIds.value = []
-    detailVisible.value = false
-    await loadChanges()
-  } catch (error) {
-    ElMessage.error((error as Error)?.message || COPY.FAILED)
-  } finally {
-    processing.value = false
-  }
-}
-
-async function submitBatchReject() {
-  const comment = batchRejectComment.value.trim()
-  if (!comment) {
+  const reason = batchRejectReason.value.trim()
+  if (action === 'reject' && !reason) {
     ElMessage.error('驳回理由必填')
     return
   }
-  if (comment.length > 200) {
-    ElMessage.error('驳回理由不超过 200 字')
-    return
-  }
   processing.value = true
   try {
-    await changeApi.batchReject(selectedIds.value, comment)
-    ElMessage.success('已批量驳回')
+    const result = await changeApi.reviewBatch({
+      batchNo,
+      action,
+      reason: action === 'reject' ? reason : undefined,
+    })
+    ElMessage.success(`批次 ${batchNo} 已处理 ${result.count} 条`)
     batchRejectVisible.value = false
     detailVisible.value = false
-    selectedIds.value = []
-    await loadChanges()
+    changeTableRef.value?.reload(false)
   } catch (error) {
     ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
@@ -205,26 +173,34 @@ async function submitBatchReject() {
   }
 }
 
-const CHANGE_TYPE_LABELS: Record<string, string> = {
-  transfer_in: '转入',
-  transfer_out: '转出',
-  suspend: '休学',
-  resume: '复学',
-  info_fix: '信息修正',
+function afterText(row: ChangeRequestListItem) {
+  const after = row.payloadJson?.after
+  if (!after) return '—'
+  return `学院#${after.collegeId ?? '—'}${after.classId ? ` / 班级#${after.classId}` : ''}`
 }
 
-const CHANGE_STATUS_LABELS: Record<
-  string,
-  { label: string; type: 'success' | 'danger' | 'warning' }
-> = {
-  approved: { label: '已通过', type: 'success' },
-  rejected: { label: '已驳回', type: 'danger' },
-  pending: { label: '待审核', type: 'warning' },
+/**
+ * 表格插槽里的 row 是 el-table 的 DefaultRow，收窄后交给 afterText。
+ * 模板插值中不能直接写 `asRow<ChangeRequestListItem>(row)`：`<` 会被 Vue 模板解析器当成标签起始。
+ */
+function afterTextOf(row: unknown) {
+  return afterText(asRow<ChangeRequestListItem>(row))
 }
 
-// 进入页面即拉取师生名册与异动审批列表
-void loadPeople()
-void loadChanges()
+function beforeText(row: ChangeRequestListItem) {
+  const before = row.payloadJson?.before
+  if (!before) {
+    return `${row.currentCollegeName || '—'} / ${row.currentClassName || '—'}`
+  }
+  return `学院#${before.collegeId ?? '—'}${before.classId ? ` / 班级#${before.classId}` : ''}`
+}
+
+onMounted(async () => {
+  const windowStore = useWindowStore()
+  await windowStore.fetch()
+  semesterId.value = windowStore.semesterId
+  colleges.value = await orgApi.colleges().catch(() => [])
+})
 </script>
 
 <template>
@@ -237,7 +213,7 @@ void loadChanges()
             <el-radio-button value="teacher">教师</el-radio-button>
           </el-radio-group>
           <el-input
-            v-model="keyword"
+            v-model="peopleFilters.keyword"
             :placeholder="personType === 'student' ? '学号 / 姓名' : '工号 / 姓名'"
             clearable
             style="width: 220px"
@@ -247,194 +223,198 @@ void loadChanges()
           <el-button type="primary" @click="searchPeople">查询</el-button>
         </div>
 
-        <el-alert
-          v-if="peopleError"
-          :title="peopleError"
-          type="error"
-          :closable="false"
-          show-icon
-          class="mb-16"
-        />
-        <el-table v-loading="loading" :data="rows" border stripe>
+        <ServerTable ref="peopleTableRef" :fetcher="fetchPeoplePage">
           <el-table-column prop="userNo" label="学号/工号" width="140" />
           <el-table-column prop="name" label="姓名" width="110" />
-          <el-table-column prop="collegeName" label="学院" min-width="140" />
-          <el-table-column prop="majorName" label="专业" min-width="140" />
-          <el-table-column prop="className" label="班级" width="140" />
+          <el-table-column label="角色" width="140">
+            <template #default="{ row }">
+              {{ row.roles.map((r: string) => ROLE_LABELS[r] || r).join('、') }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="collegeName" label="学院" min-width="140">
+            <template #default="{ row }">{{ row.collegeName || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="className" label="班级" width="140">
+            <template #default="{ row }">{{ row.className || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="phone" label="手机号" width="140">
+            <template #default="{ row }">{{ row.phone || '—' }}</template>
+          </el-table-column>
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.status === 'active' ? 'success' : 'danger'" size="small">
-                {{ row.status === 'active' ? '正常' : '停用' }}
+              <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
+                {{ row.status === 1 ? '正常' : '停用' }}
               </el-tag>
             </template>
           </el-table-column>
-        </el-table>
-        <div class="app-pagination">
-          <el-pagination
-            v-model:current-page="page"
-            v-model:page-size="size"
-            :total="total"
-            :page-sizes="[10, 20, 50]"
-            layout="total, sizes, prev, pager, next"
-            background
-            @current-change="loadPeople"
-            @size-change="searchPeople"
-          />
-        </div>
+        </ServerTable>
 
         <div class="mt-16">
           <ImportWizard
-            :title="`${personType === 'student' ? '学生' : '教师'}全量 Excel 导入（异步批次）`"
-            :uploader="peopleApi.importExcel"
+            :title="`${personType === 'student' ? '学生' : '教师'}名单 Excel 导入（异步批次）`"
+            :uploader="
+              (file: File) => accountsApi.importExcel(file, personType, semesterId ?? undefined)
+            "
             :poller="batchApi.detail"
-            :error-downloader="batchApi.downloadErrors"
+            :error-downloader="downloadErrorDetail"
+            :template-downloader="() => accountsApi.template(personType)"
           />
         </div>
       </el-tab-pane>
 
       <el-tab-pane label="异动审批工作台" name="change">
         <div class="app-toolbar">
-          <el-select v-model="changeStatus" clearable style="width: 160px" @change="searchChanges">
-            <el-option label="待审核" value="pending" />
+          <el-select
+            v-model="changeFilters.status"
+            clearable
+            placeholder="全部状态"
+            style="width: 170px"
+            @change="searchChanges"
+          >
+            <el-option label="待审批" value="pending_review" />
+            <el-option label="字段审查中" value="pending_field_check" />
             <el-option label="已通过" value="approved" />
             <el-option label="已驳回" value="rejected" />
           </el-select>
           <el-input
-            v-model="changeKeyword"
-            placeholder="学号 / 姓名"
+            v-model="changeFilters.batchNo"
+            placeholder="批次号"
             clearable
-            style="width: 200px"
+            style="width: 180px"
             @keyup.enter="searchChanges"
             @clear="searchChanges"
           />
           <el-button type="primary" @click="searchChanges">查询</el-button>
-          <template v-if="selectedIds.length">
-            <el-button type="success" :loading="processing" @click="batchApprove">
-              批量通过（{{ selectedIds.length }}）
-            </el-button>
-            <el-button type="danger" :loading="processing" @click="batchRejectVisible = true">
-              批量驳回（{{ selectedIds.length }}）
-            </el-button>
-          </template>
+          <span class="text-muted">批量处理按批次号执行（后端 /admin/change/batch/review）</span>
         </div>
 
-        <el-alert
-          v-if="changeError"
-          :title="changeError"
-          type="error"
-          :closable="false"
-          show-icon
-          class="mb-16"
-        />
-        <el-table
-          v-loading="changeLoading"
-          :data="changeRows"
-          border
-          stripe
-          @selection-change="
-            (selection: ChangeRequest[]) =>
-              (selectedIds = selection.filter((r) => r.status === 'pending').map((r) => r.id))
-          "
-        >
-          <el-table-column
-            type="selection"
-            width="48"
-            :selectable="(row: ChangeRequest) => row.status === 'pending'"
-          />
-          <el-table-column prop="studentNo" label="学号" width="140" />
-          <el-table-column prop="studentName" label="姓名" width="110" />
+        <ServerTable ref="changeTableRef" :fetcher="fetchChangesPage">
+          <el-table-column prop="targetUserNo" label="学号/工号" width="140" />
+          <el-table-column prop="targetUserName" label="姓名" width="110">
+            <template #default="{ row }">{{ row.targetUserName || '—' }}</template>
+          </el-table-column>
           <el-table-column label="异动类型" width="120">
             <template #default="{ row }">{{ CHANGE_TYPE_LABELS[row.type] || row.type }}</template>
           </el-table-column>
-          <el-table-column prop="submitterName" label="申请人" width="120" />
-          <el-table-column label="系统字段审查" width="130">
+          <el-table-column label="当前归属" min-width="180">
             <template #default="{ row }">
-              <span v-if="!row.fieldCheck || row.fieldCheck.length === 0" class="text-muted">
-                —
-              </span>
-              <span
-                v-else-if="row.fieldCheck.every((f: { passed: boolean }) => f.passed)"
-                class="text-success"
-              >
-                全部通过
-              </span>
-              <span v-else class="text-danger">
-                {{ row.fieldCheck.filter((f: { passed: boolean }) => !f.passed).length }} 项未通过
-              </span>
+              {{ row.currentCollegeName || '—' }} / {{ row.currentClassName || '—' }}
             </template>
           </el-table-column>
-          <el-table-column label="内容审核" width="110">
+          <el-table-column label="变更后" min-width="180">
+            <template #default="{ row }">{{ afterTextOf(row) }}</template>
+          </el-table-column>
+          <el-table-column prop="applicantName" label="申请人" width="110">
+            <template #default="{ row }">{{ row.applicantName || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="批次号" width="130">
+            <template #default="{ row }">{{ row.batchNo || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
             <template #default="{ row }">
-              <el-tag :type="CHANGE_STATUS_LABELS[row.status].type" size="small">
-                {{ CHANGE_STATUS_LABELS[row.status].label }}
+              <el-tag :type="statusMetaOf(CHANGE_STATUS_META, row.status).type" size="small">
+                {{ statusMetaOf(CHANGE_STATUS_META, row.status).label }}
               </el-tag>
             </template>
+          </el-table-column>
+          <el-table-column label="提交时间" width="170">
+            <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="240" fixed="right">
             <template #default="{ row }">
               <div class="app-table-actions">
-                <el-button size="small" text @click="openDetail(row)">审查详情</el-button>
-                <template v-if="row.status === 'pending'">
-                  <el-button size="small" type="success" text @click="approve(row)">通过</el-button>
-                  <el-button size="small" type="danger" text @click="openReject(row)">
+                <el-button size="small" text @click="openDetail(asRow<ChangeRequestListItem>(row))">
+                  审查详情
+                </el-button>
+                <template v-if="row.status === 'pending_review'">
+                  <PermButton
+                    :code="PERMISSIONS.CHANGE_REVIEW"
+                    size="small"
+                    type="success"
+                    text
+                    @click="approve(asRow<ChangeRequestListItem>(row))"
+                  >
+                    通过
+                  </PermButton>
+                  <PermButton
+                    :code="PERMISSIONS.CHANGE_REVIEW"
+                    size="small"
+                    type="danger"
+                    text
+                    @click="openReject(asRow<ChangeRequestListItem>(row))"
+                  >
                     驳回
-                  </el-button>
+                  </PermButton>
                 </template>
+                <el-button
+                  v-if="row.batchNo"
+                  size="small"
+                  text
+                  @click="openBatch(asRow<ChangeRequestListItem>(row))"
+                >
+                  按批次
+                </el-button>
               </div>
             </template>
           </el-table-column>
-        </el-table>
-        <div class="app-pagination">
-          <el-pagination
-            v-model:current-page="changePage"
-            v-model:page-size="changeSize"
-            :total="changeTotal"
-            :page-sizes="[10, 20, 50]"
-            layout="total, sizes, prev, pager, next"
-            background
-            @current-change="loadChanges"
-            @size-change="searchChanges"
-          />
-        </div>
-        <el-empty
-          v-if="!changeLoading && changeRows.length === 0"
-          :description="COPY.EMPTY"
-          :image-size="80"
-        />
+        </ServerTable>
       </el-tab-pane>
     </el-tabs>
 
-    <!-- 审查详情：系统字段审查结果只读展示 -->
+    <!-- 审查详情 -->
     <el-dialog v-model="detailVisible" title="异动审查详情" width="620px" append-to-body>
       <template v-if="selected">
         <el-descriptions :column="2" border size="small" class="mb-16">
-          <el-descriptions-item label="学号">{{ selected.studentNo }}</el-descriptions-item>
-          <el-descriptions-item label="姓名">{{ selected.studentName }}</el-descriptions-item>
+          <el-descriptions-item label="学号/工号">{{ selected.targetUserNo }}</el-descriptions-item>
+          <el-descriptions-item label="姓名">
+            {{ selected.targetUserName || '—' }}
+          </el-descriptions-item>
           <el-descriptions-item label="异动类型">
             {{ CHANGE_TYPE_LABELS[selected.type] || selected.type }}
           </el-descriptions-item>
-          <el-descriptions-item label="申请人">{{ selected.submitterName }}</el-descriptions-item>
-          <el-descriptions-item label="异动说明" :span="2">
-            {{ selected.reason || '—' }}
+          <el-descriptions-item label="申请人">
+            {{ selected.applicantName || '—' }}
           </el-descriptions-item>
-          <el-descriptions-item label="审核意见" :span="2">
-            {{ selected.reviewComment || '—' }}
+          <el-descriptions-item label="当前归属" :span="2">
+            {{ beforeText(selected) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="变更后" :span="2">
+            {{ afterText(selected) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="批次号">{{ selected.batchNo || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="提交时间">
+            {{ formatDateTime(selected.createdAt) }}
           </el-descriptions-item>
         </el-descriptions>
 
-        <h4>系统字段审查结果（只读）</h4>
-        <FieldCheckResult :items="selected.fieldCheck" />
+        <el-alert
+          title="系统字段审查不过的记录会直接落「已驳回」，因此进入「待审批」即表示字段审查已通过，此处只需内容审核。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
 
         <div class="mt-16 app-table-actions">
-          <template v-if="selected.status === 'pending'">
-            <el-button type="success" :loading="processing" @click="approve(selected)">
+          <template v-if="selected.status === 'pending_review'">
+            <PermButton
+              :code="PERMISSIONS.CHANGE_REVIEW"
+              type="success"
+              :loading="processing"
+              @click="approve(selected)"
+            >
               内容审核通过
-            </el-button>
-            <el-button type="danger" :loading="processing" @click="openReject(selected)">
+            </PermButton>
+            <PermButton
+              :code="PERMISSIONS.CHANGE_REVIEW"
+              type="danger"
+              :loading="processing"
+              @click="openReject(selected)"
+            >
               驳回
-            </el-button>
+            </PermButton>
           </template>
-          <el-button v-else @click="detailVisible = false">关闭</el-button>
+          <el-button v-if="selected.batchNo" @click="openBatch(selected)">按批次处理</el-button>
+          <el-button @click="detailVisible = false">关闭</el-button>
         </div>
       </template>
     </el-dialog>
@@ -442,7 +422,7 @@ void loadChanges()
     <!-- 驳回：理由必填 -->
     <el-dialog v-model="rejectVisible" title="驳回异动申请" width="480px" append-to-body>
       <el-input
-        v-model="rejectComment"
+        v-model="rejectReason"
         type="textarea"
         :rows="4"
         maxlength="200"
@@ -451,32 +431,52 @@ void loadChanges()
       />
       <template #footer>
         <el-button @click="rejectVisible = false">取消</el-button>
-        <el-button type="danger" :loading="processing" @click="submitReject">确认驳回</el-button>
+        <PermButton
+          :code="PERMISSIONS.CHANGE_REVIEW"
+          type="danger"
+          :loading="processing"
+          @click="submitReject"
+        >
+          确认驳回
+        </PermButton>
       </template>
     </el-dialog>
 
-    <!-- 批量驳回：理由必填 -->
-    <el-dialog v-model="batchRejectVisible" title="批量驳回异动申请" width="480px" append-to-body>
+    <!-- 按批次批量处理 -->
+    <el-dialog v-model="batchRejectVisible" title="按批次批量处理" width="500px" append-to-body>
       <el-alert
-        :title="`将对选中的 ${selectedIds.length} 条待审核申请执行驳回`"
+        :title="`将对批次 ${batchAction?.batchNo || '—'} 下全部待审批记录执行操作`"
         type="info"
         :closable="false"
         show-icon
         class="mb-16"
       />
       <el-input
-        v-model="batchRejectComment"
+        v-model="batchRejectReason"
         type="textarea"
         :rows="4"
         maxlength="200"
         show-word-limit
-        placeholder="请输入驳回理由（必填，1-200 字）"
+        placeholder="驳回理由（驳回时必填，1-200 字）"
       />
       <template #footer>
         <el-button @click="batchRejectVisible = false">取消</el-button>
-        <el-button type="danger" :loading="processing" @click="submitBatchReject">
-          确认驳回
-        </el-button>
+        <PermButton
+          :code="PERMISSIONS.CHANGE_REVIEW"
+          type="success"
+          :loading="processing"
+          @click="submitBatch('pass')"
+        >
+          批量通过
+        </PermButton>
+        <PermButton
+          :code="PERMISSIONS.CHANGE_REVIEW"
+          type="danger"
+          :loading="processing"
+          @click="submitBatch('reject')"
+        >
+          批量驳回
+        </PermButton>
       </template>
     </el-dialog>
   </div>

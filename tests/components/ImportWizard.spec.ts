@@ -8,24 +8,21 @@ import { useConfigStore } from '@/stores/config'
 import type { ImportBatch } from '@/types'
 
 /**
- * ImportWizard：轮询与错误回显（SPEC §10 / PRD 功能 5）：
- * 上传 → 批次轮询进度 → 结果摘要 + 错误明细下载 + 前 N 行预览。
+ * ImportWizard：批次轮询与错误回显（SPEC §10 / API.md §3.9）：
+ * 上传（.xlsx）→ GET /api/batch/{id} 轮询（status running→done/failed）
+ * → 结果摘要（okCount/errorCount）+ 错误明细下载 + 错误行预览。
  */
 describe('ImportWizard Excel 异步导入', () => {
-  let batches: Record<string, ImportBatch>
+  let batches: Record<number, ImportBatch>
 
   const batch = (overrides: Partial<ImportBatch> = {}): ImportBatch => ({
-    batchId: 'IMB-001',
+    id: 1,
     bizType: 'student',
-    fileName: '学生全量表.xlsx',
-    status: 'parsing',
+    status: 'running',
     progressPct: 0,
-    totalRows: 0,
-    successRows: 0,
-    errorRows: 0,
-    message: '',
-    createdAt: '2026-09-18 08:00',
-    errorPreview: [],
+    total: 0,
+    okCount: 0,
+    errorCount: 0,
     ...overrides,
   })
 
@@ -33,20 +30,23 @@ describe('ImportWizard Excel 异步导入', () => {
     setActivePinia(createPinia())
     batches = {}
     const config = useConfigStore()
-    config.importMaxSizeMb = 10
+    config.config['import.max_file_mb'] = 10
   })
 
   function mountWizard() {
     return mount(ImportWizard, {
       props: {
-        title: '学生全量 Excel 导入',
-        uploader: async () => ({ batchId: 'IMB-001' }),
-        poller: async (id: string) => {
+        title: '学生名单 Excel 导入',
+        uploader: async () => ({ batchId: 1 }),
+        poller: async (id: number) => {
           const current = batches[id] ?? batch()
           batches[id] = current
           return current
         },
-        errorDownloader: async () => new Blob(['row,reason']),
+        errorDownloader: async (id: number) => ({
+          blob: new Blob(['row,reason']),
+          fileName: `导入错误明细-${id}.xlsx`,
+        }),
       },
       global: { plugins: [ElementPlus, createPinia()], components: { UploadFilled } },
       attachTo: document.body,
@@ -54,29 +54,24 @@ describe('ImportWizard Excel 异步导入', () => {
   }
 
   it('上传后展示批次号与进度，完成后给出结果摘要', async () => {
-    batches['IMB-001'] = batch()
+    batches[1] = batch()
     const wrapper = mountWizard()
 
-    // 触发上传（before-upload 返回 false 阻止 el-upload 自动请求，由我们调用）
-    await wrapper.vm.$options
     const input = wrapper.find('input[type="file"]')
-    const file = new File(['x'], '学生全量表.xlsx', { type: 'application/vnd.ms-excel' })
+    const file = new File(['x'], '学生名单.xlsx', { type: 'application/vnd.ms-excel' })
     Object.defineProperty(input.element, 'files', { value: [file] })
-
-    // 直接调用内部 handleFile 逻辑：通过 emit change 触发 el-upload 的 before-upload
     await input.trigger('change')
-    await vi.waitFor(() => expect(wrapper.text()).toContain('IMB-001'), { timeout: 8000 })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('批次号：1'), { timeout: 8000 })
     expect(wrapper.text()).toContain('正在解析')
 
-    // 推进到「部分错误」终态
-    batches['IMB-001'] = batch({
-      status: 'partial',
+    // 推进到「有错误行」终态
+    batches[1] = batch({
+      status: 'done',
       progressPct: 100,
-      totalRows: 12,
-      successRows: 11,
-      errorRows: 1,
-      message: '1 行数据校验失败',
-      errorPreview: [{ row: 7, reason: '学号格式不正确（应为 8 位数字）' }],
+      total: 12,
+      okCount: 11,
+      errorCount: 1,
+      errorDetail: [{ row: 7, reason: '学号格式不正确（应为 8 位数字）' }],
     })
     await vi.waitFor(() => expect(wrapper.text()).toContain('导入完成：成功 11 行，失败 1 行'), {
       timeout: 8000,
@@ -91,26 +86,28 @@ describe('ImportWizard Excel 异步导入', () => {
     const file = new File(['x'], '名单.txt', { type: 'text/plain' })
     Object.defineProperty(input.element, 'files', { value: [file] })
     await input.trigger('change')
-    // 未产生批次号
-    expect(wrapper.text()).not.toContain('IMB-')
+    expect(wrapper.text()).not.toContain('批次号：')
     wrapper.unmount()
   })
 
-  it('解析失败展示失败原因，可重新上传', async () => {
-    batches['IMB-001'] = batch()
+  it('批次失败展示失败提示，可重新上传', async () => {
+    batches[1] = batch()
     const wrapper = mountWizard()
     const input = wrapper.find('input[type="file"]')
     const file = new File(['x'], '教材库.xlsx')
     Object.defineProperty(input.element, 'files', { value: [file] })
     await input.trigger('change')
-    await vi.waitFor(() => expect(wrapper.text()).toContain('IMB-001'), { timeout: 8000 })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('批次号：1'), { timeout: 8000 })
 
-    batches['IMB-001'] = batch({ status: 'failed', progressPct: 100, message: '文件格式无法解析' })
-    await vi.waitFor(() => expect(wrapper.text()).toContain('解析失败：文件格式无法解析'), {
+    batches[1] = batch({ status: 'failed', progressPct: 100 })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('解析失败，请下载错误明细核对后重试'), {
       timeout: 8000,
     })
-    await wrapper.find('button').trigger('click') // 重新上传
-    expect(wrapper.text()).not.toContain('IMB-001')
+    const resetButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('重新上传'))
+    await resetButton?.trigger('click')
+    expect(wrapper.text()).not.toContain('批次号：1')
     wrapper.unmount()
   })
 })

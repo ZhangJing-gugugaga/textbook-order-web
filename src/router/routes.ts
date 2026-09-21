@@ -1,7 +1,8 @@
 import type { RouteRecordRaw } from 'vue-router'
 
-/** 路由元信息：权限码为提议值（SPEC §4，以后端 sys_permission 为准） */
+/** 路由元信息：权限码取后端 sys_permission（M1 冻结 37 条） */
 export interface AppRouteMeta {
+  /** 页面标题：侧边栏文案 + document.title（守卫 afterEach 写入） */
   title: string
   icon?: string
   permission?: string
@@ -9,8 +10,6 @@ export interface AppRouteMeta {
   group?: string
   /** 不进侧边栏菜单 */
   hidden?: boolean
-  /** 布局内不缓存 */
-  keepAlive?: boolean
 }
 
 export const routes: RouteRecordRaw[] = [
@@ -33,9 +32,10 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '页面不存在', hidden: true },
   },
   {
+    // 根路径不做静态 redirect：落地页依赖登录用户的权限码，
+    // 由守卫调用 resolveLandingPath() 动态解析（详见 router/guards.ts）
     path: '/',
     component: () => import('@/layouts/DefaultLayout.vue'),
-    redirect: '/dashboard',
     children: [
       {
         path: 'profile',
@@ -51,7 +51,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '数据看板',
           icon: 'DataBoard',
-          permission: 'dashboard:view',
+          permission: 'dashboard:stat:view',
           group: '教材室',
         },
       },
@@ -62,7 +62,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '账号管理',
           icon: 'User',
-          permission: 'sys:user:manage',
+          permission: 'user:account:manage',
           group: '教材室',
         },
       },
@@ -73,7 +73,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '组织管理',
           icon: 'OfficeBuilding',
-          permission: 'org:manage',
+          permission: 'org:college:manage',
           group: '教材室',
         },
       },
@@ -84,7 +84,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '学期与窗口引擎',
           icon: 'Calendar',
-          permission: 'semester:manage',
+          permission: 'semester:semester:manage',
           group: '教材室',
         },
       },
@@ -95,7 +95,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '教材库',
           icon: 'Reading',
-          permission: 'textbook:manage',
+          permission: 'textbook:book:manage',
           group: '教材室',
         },
       },
@@ -106,7 +106,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '课程与任课管理',
           icon: 'Notebook',
-          permission: 'course:manage',
+          permission: 'course:course:manage',
           group: '教材室',
         },
       },
@@ -117,7 +117,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '学生/教师管理',
           icon: 'Avatar',
-          permission: 'people:manage',
+          permission: 'people:student:import',
           group: '教材室',
         },
       },
@@ -128,7 +128,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '复核工作台',
           icon: 'Finished',
-          permission: 'review:form',
+          permission: 'order:form:review',
           group: '教材室',
         },
       },
@@ -139,7 +139,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '征订数据',
           icon: 'TrendCharts',
-          permission: 'data:order:view',
+          permission: 'order:form:view:all',
           group: '教材室',
         },
       },
@@ -150,7 +150,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '导出中心',
           icon: 'Download',
-          permission: 'export:center',
+          permission: 'export:order:create',
           group: '教材室',
         },
       },
@@ -173,7 +173,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '本院征订记录',
           icon: 'Document',
-          permission: 'data:college:view',
+          permission: 'order:form:view:college',
           group: '学院秘书',
         },
       },
@@ -184,7 +184,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '本院导出（签字版）',
           icon: 'Download',
-          permission: 'export:college',
+          permission: 'export:signature:create',
           group: '学院秘书',
         },
       },
@@ -195,7 +195,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '窗口状态',
           icon: 'Calendar',
-          permission: 'window:view',
+          permission: 'semester:window:view',
           group: '学院秘书',
         },
       },
@@ -206,7 +206,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '异动申请',
           icon: 'Switch',
-          permission: 'change:submit',
+          permission: 'change:request:submit',
           group: '学院秘书',
         },
       },
@@ -218,7 +218,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '我的课程',
           icon: 'Reading',
-          permission: 'order:form:view',
+          permission: 'order:form:view:self',
           group: '任课老师',
         },
       },
@@ -229,7 +229,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '填报教材',
           icon: 'EditPen',
-          permission: 'order:form:fill',
+          permission: 'order:form:submit',
           group: '任课老师',
         },
       },
@@ -240,7 +240,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '我的提交记录',
           icon: 'List',
-          permission: 'order:form:view',
+          permission: 'order:form:view:self',
           group: '任课老师',
         },
       },
@@ -252,7 +252,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '选书',
           icon: 'ShoppingCart',
-          permission: 'student:order:fill',
+          permission: 'student:order:submit',
           group: '学生',
         },
       },
@@ -263,7 +263,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '我的选购记录',
           icon: 'List',
-          permission: 'student:order:view',
+          permission: 'student:order:view:self',
           group: '学生',
         },
       },
@@ -275,7 +275,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '订购清单',
           icon: 'Files',
-          permission: 'supplier:list:view',
+          permission: 'supplier:order:view',
           group: '教材供货商',
         },
       },
@@ -286,7 +286,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '清单导出',
           icon: 'Download',
-          permission: 'supplier:export',
+          permission: 'supplier:order:export',
           group: '教材供货商',
         },
       },

@@ -4,8 +4,9 @@ import { useAuthStore } from '@/stores/auth'
 import { ROLE_LABELS } from '@/utils/constants'
 
 /**
- * 个人中心（PRD 公共功能）：
- * 改密码（全员唯一自助功能）、切换身份（多角色用户）。
+ * 个人中心（PRD 公共功能 / API.md §3.1）：
+ * 改密码（全员唯一自助功能，改密后旧 refresh 全部撤销并重发新令牌）、
+ * 切换身份（多角色用户，切换后重拉权限码；数据范围不变）。
  */
 const auth = useAuthStore()
 const changePasswordVisible = ref(false)
@@ -23,8 +24,18 @@ const roleSwitcherVisible = ref(false)
         {{ ROLE_LABELS[auth.currentRole] || auth.currentRole }}
       </el-descriptions-item>
       <el-descriptions-item label="数据范围">
-        <span v-if="auth.user?.collegeIds?.length">{{ auth.user.collegeIds.length }} 个学院</span>
+        <span v-if="auth.user?.collegeName">{{ auth.user.collegeName }}</span>
+        <span v-else-if="auth.currentRole === 'SECRETARY'">本院</span>
         <span v-else>全校</span>
+      </el-descriptions-item>
+      <el-descriptions-item label="班级">
+        <span>{{ auth.user?.className || '—' }}</span>
+      </el-descriptions-item>
+      <el-descriptions-item label="手机号">
+        <span>{{ auth.user?.phone || '—' }}</span>
+      </el-descriptions-item>
+      <el-descriptions-item label="当前学期">
+        <span>{{ auth.user?.activeSemester?.name || '未设置' }}</span>
       </el-descriptions-item>
       <el-descriptions-item label="权限码数量">{{ auth.permissions.length }}</el-descriptions-item>
       <el-descriptions-item label="密码状态">

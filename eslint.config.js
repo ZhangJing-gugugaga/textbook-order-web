@@ -6,7 +6,19 @@ import prettier from 'eslint-config-prettier'
 import globals from 'globals'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'mock/**', 'logs/**'] },
+  {
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'logs/**',
+      'coverage/**',
+      'playwright-report/**',
+      'test-results/**',
+      // 由 unplugin-auto-import / unplugin-vue-components 生成，不参与 lint
+      'src/types/auto-imports.d.ts',
+      'src/types/components.d.ts',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
@@ -27,10 +39,18 @@ export default tseslint.config(
     },
   },
   {
-    files: ['tests/**/*.ts'],
+    files: ['tests/**/*.ts', 'e2e/**/*.ts'],
     rules: {
       'vue/one-component-per-file': 'off',
     },
+  },
+  {
+    files: ['e2e/**/*.ts'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
+    files: ['*.config.ts', '*.config.js'],
+    languageOptions: { globals: { ...globals.node } },
   },
   {
     rules: {
@@ -42,6 +62,8 @@ export default tseslint.config(
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
+      // TS 已覆盖未定义标识符检查；且 Element Plus 程序式 API 由 unplugin-auto-import 注入
+      'no-undef': 'off',
       'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
   },

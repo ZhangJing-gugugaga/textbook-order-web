@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+
 import { dashboardApi } from '@/api/dashboard'
 import { useWindowStore } from '@/stores/window'
-import { COPY } from '@/utils/constants'
-import { formatCountdown } from '@/utils/format'
+import { COPY, WINDOW_STATUS } from '@/utils/constants'
+import { formatCountdown, formatDateTime } from '@/utils/format'
 import type { DashboardStats } from '@/types'
 
-/** 数据看板（PRD 教材室-数据看板 / 02 §6.2） */
+/**
+ * 数据看板（PRD 教材室-数据看板 / API.md §3.12）：
+ * 窗口状态 + 各学院教师提交进度 + 待复核/未确认/学生选购汇总。
+ * 服务端下发 serverTime，倒计时以服务端时钟为准（不信任本地时钟）。
+ */
 const windowStore = useWindowStore()
 const stats = ref<DashboardStats | null>(null)
 const loading = ref(false)
@@ -15,8 +20,9 @@ async function load() {
   loading.value = true
   try {
     stats.value = await dashboardApi.stats()
-  } catch {
+  } catch (error) {
     stats.value = null
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
     loading.value = false
   }
@@ -27,26 +33,51 @@ function pct(part: number, total: number) {
   return Math.round((part / total) * 100)
 }
 
-onMounted(load)
+const windowLabel = (status: string | null | undefined) =>
+  status ? (WINDOW_STATUS[status as keyof typeof WINDOW_STATUS] ?? status) : '—'
+
+onMounted(() => {
+  void windowStore.fetch()
+  void load()
+})
 </script>
 
 <template>
   <div v-loading="loading">
+    <div class="flex-between mb-16">
+      <h3>数据看板</h3>
+      <el-button size="small" @click="load">刷新</el-button>
+    </div>
+
     <div class="stat-grid mb-16">
       <div class="stat-card">
         <div class="stat-label">当前学期</div>
-        <div class="stat-value">{{ stats?.semesterName || '—' }}</div>
-        <div class="stat-sub">窗口状态：{{ windowStore.status }}</div>
+        <div class="stat-value stat-value-sm">
+          {{ stats?.semesterId ? `#${stats.semesterId}` : '未设置 active 学期' }}
+        </div>
+        <div class="stat-sub">
+          窗口状态：{{ windowLabel(stats?.windowStatus ?? windowStore.status) }}
+          <template v-if="stats?.channelOpen !== null && stats?.channelOpen !== undefined">
+            ｜学生通道：{{ stats.channelOpen === 1 ? '开放' : '关闭' }}
+          </template>
+        </div>
       </div>
       <div class="stat-card">
         <div class="stat-label">待复核表单</div>
-        <div class="stat-value">{{ stats?.pendingReviewCount ?? 0 }}</div>
+        <div class="stat-value">{{ stats?.pendingReviewTotal ?? 0 }}</div>
         <div class="stat-sub">教师提交后待超管内容审核</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">未确认通知</div>
-        <div class="stat-value">{{ stats?.unconfirmedNoticeCount ?? 0 }}</div>
+        <div class="stat-value">{{ stats?.unconfirmedNoticeTotal ?? 0 }}</div>
         <div class="stat-sub">打开 Web 阻塞弹窗确认</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">学生选购提交</div>
+        <div class="stat-value">
+          {{ stats?.studentSubmittedTotal ?? 0 }} / {{ stats?.studentOrderTotal ?? 0 }}
+        </div>
+        <div class="stat-sub">已提交选购单 / 应有选购单</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">窗口剩余</div>
@@ -59,15 +90,15 @@ onMounted(load)
                 : '已截止'
           }}
         </div>
-        <div class="stat-sub">截止时间 {{ windowStore.windowEnd || '—' }}</div>
+        <div class="stat-sub">截止时间 {{ formatDateTime(windowStore.windowEnd) }}</div>
       </div>
     </div>
 
     <div class="app-page">
       <h3 class="mb-16">各学院提交进度</h3>
       <el-table :data="stats?.colleges ?? []" border stripe>
-        <el-table-column prop="collegeName" label="学院" min-width="140" />
-        <el-table-column label="教师表单" align="center">
+        <el-table-column prop="collegeName" label="学院" min-width="150" />
+        <el-table-column label="教师表单" align="center" width="120">
           <template #default="{ row }">{{ row.submitted }} / {{ row.teacherTotal }}</template>
         </el-table-column>
         <el-table-column label="教师提交进度" min-width="200">
@@ -75,22 +106,19 @@ onMounted(load)
             <el-progress :percentage="pct(row.submitted, row.teacherTotal)" :stroke-width="10" />
           </template>
         </el-table-column>
-        <el-table-column label="学生选购" align="center">
-          <template #default="{ row }">{{ row.studentOrdered }} / {{ row.studentTotal }}</template>
+        <el-table-column label="待复核" align="center" width="100">
+          <template #default="{ row }">{{ row.pendingReview }}</template>
         </el-table-column>
-        <el-table-column label="学生选购进度" min-width="200">
-          <template #default="{ row }">
-            <el-progress
-              :percentage="pct(row.studentOrdered, row.studentTotal)"
-              :stroke-width="10"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="已复核" align="center" width="110">
+        <el-table-column label="已通过" align="center" width="100">
           <template #default="{ row }">{{ row.reviewed }}</template>
         </el-table-column>
+        <el-table-column label="已驳回" align="center" width="100">
+          <template #default="{ row }">{{ row.rejected }}</template>
+        </el-table-column>
+        <template #empty>
+          <el-empty :description="COPY.EMPTY" :image-size="80" />
+        </template>
       </el-table>
-      <el-empty v-if="!loading && !stats" :description="COPY.EMPTY" />
     </div>
   </div>
 </template>
@@ -98,7 +126,7 @@ onMounted(load)
 <style scoped>
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 16px;
 }
 

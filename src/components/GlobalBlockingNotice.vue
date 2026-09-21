@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+
 import { storeToRefs } from 'pinia'
 import { useNoticeStore } from '@/stores/notice'
 import { COPY } from '@/utils/constants'
@@ -26,7 +26,7 @@ const progressText = computed(() =>
 async function confirm() {
   if (!current.value) return
   try {
-    await notice.confirm(current.value.id)
+    await notice.confirm(current.value.taskId)
   } catch (error) {
     // 确认失败：弹窗保留，可重试，不放行
     ElMessage.error((error as Error)?.message || COPY.FAILED)
@@ -52,7 +52,7 @@ async function confirm() {
       <div class="blocking-notice-title">{{ current?.title }}</div>
       <div class="blocking-notice-content">{{ current?.content }}</div>
       <div class="blocking-notice-meta">
-        来源：{{ current?.source === 'system' ? '系统（窗口变更）' : '教材室' }} ·
+        来源：{{ current?.source === 'system_window_change' ? '系统（窗口变更）' : '教材室' }} ·
         {{ current?.createdAt }}
       </div>
       <div v-if="progressText" class="blocking-notice-meta">{{ progressText }}</div>

@@ -3,78 +3,77 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { orderFormApi } from '@/api/orderForm'
 import { useWindowStore } from '@/stores/window'
-import type { TeachingAssignment } from '@/types'
+import { COPY } from '@/utils/constants'
+import type { TeacherCourseGroup } from '@/types'
 
 /** 我的课程（PRD 任课老师-我的课程）：按导入的任课关系带出本人课程，按班级分组 */
 const router = useRouter()
 const windowStore = useWindowStore()
-const courses = ref<TeachingAssignment[]>([])
+const groups = ref<TeacherCourseGroup[]>([])
 const loading = ref(false)
+/** 取数失败原因：空 catch 会让用户看到「暂无任课关系」而误以为真没课（评审 Q5） */
+const loadError = ref('')
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
-    courses.value = await orderFormApi.myCourses()
-  } catch {
-    courses.value = []
+    groups.value = await orderFormApi.myCourses()
+  } catch (error) {
+    groups.value = []
+    loadError.value = (error as Error)?.message || COPY.FAILED
   } finally {
     loading.value = false
   }
 }
 
-/** 按课程分组，再按班级展开 */
-const grouped = computed(() => {
-  const map = new Map<
-    number,
-    { courseId: number; courseName: string; classes: TeachingAssignment[] }
-  >()
-  for (const item of courses.value) {
-    if (!map.has(item.courseId)) {
-      map.set(item.courseId, { courseId: item.courseId, courseName: item.courseName, classes: [] })
-    }
-    map.get(item.courseId)!.classes.push(item)
-  }
-  return [...map.values()]
-})
-
 const canFill = computed(() => windowStore.status === 'open')
 
-function goFill(courseId: number, classId: number) {
-  void router.push({ path: '/order-form', query: { courseId, classId } })
+function goFill() {
+  void router.push('/order-form')
 }
 
-onMounted(load)
+onMounted(() => {
+  void windowStore.fetch()
+  void load()
+})
 </script>
 
 <template>
   <div class="app-page">
     <div class="flex-between mb-16">
-      <span class="text-muted">课程由教材室导入的任课关系带出，按班级分组。</span>
-      <el-button type="primary" :disabled="!canFill" @click="router.push('/order-form')">
-        填报教材
-      </el-button>
+      <span class="text-muted">
+        课程由教材室导入的任课关系带出（征订范围 = 任课关系表），按班级分组。
+      </span>
+      <el-button type="primary" :disabled="!canFill" @click="goFill">填报教材</el-button>
     </div>
 
+    <el-alert
+      v-if="loadError"
+      class="mb-16"
+      :title="loadError"
+      type="error"
+      :closable="false"
+      show-icon
+      data-testid="my-courses-error"
+    >
+      <el-button class="mt-8" size="small" @click="load">重试</el-button>
+    </el-alert>
+
     <div v-loading="loading">
-      <el-card v-for="group in grouped" :key="group.courseId" class="mb-16" shadow="never">
+      <el-card v-for="group in groups" :key="group.classId" class="mb-16" shadow="never">
         <template #header>
           <div class="flex-between">
-            <strong>{{ group.courseName }}</strong>
-            <span class="text-muted">{{ group.classes.length }} 个班级</span>
+            <strong>{{ group.className }}</strong>
+            <span class="text-muted">{{ group.courses.length }} 门课程</span>
           </div>
         </template>
-        <el-table :data="group.classes" size="small" border>
-          <el-table-column prop="className" label="班级" min-width="160" />
-          <el-table-column prop="collegeId" label="学院编号" width="110" />
+        <el-table :data="group.courses" size="small" border>
+          <el-table-column prop="courseName" label="课程" min-width="200" />
+          <el-table-column prop="courseId" label="课程编号" width="120" />
           <el-table-column label="操作" width="160">
-            <template #default="{ row }">
-              <el-button
-                size="small"
-                type="primary"
-                text
-                :disabled="!canFill"
-                @click="goFill(group.courseId, row.classId)"
-              >
+            <template #default>
+              <el-button size="small" type="primary" text :disabled="!canFill" @click="goFill">
                 填报教材
               </el-button>
             </template>
@@ -83,12 +82,10 @@ onMounted(load)
       </el-card>
 
       <el-empty
-        v-if="!loading && grouped.length === 0"
+        v-if="!loading && !loadError && groups.length === 0"
         description="暂无任课关系，请联系教材室导入"
       >
-        <el-button type="primary" text @click="router.push('/order-form')">
-          仍要进入填报页
-        </el-button>
+        <el-button type="primary" text @click="goFill">仍要进入填报页</el-button>
       </el-empty>
     </div>
   </div>

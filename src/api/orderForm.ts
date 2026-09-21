@@ -1,33 +1,54 @@
 import { http } from './http'
-import type { FieldCheckItem, OrderForm, PageQuery, PageResult } from '@/types'
+import type {
+  OrderForm,
+  OrderFormListItem,
+  PageResult,
+  TeacherCourseGroup,
+  TeacherTextbookOption,
+} from '@/types'
 
-export interface OrderFormSubmitPayload {
-  teacherId: number
-  items: {
-    courseId: number
-    classId: number
-    textbookId: number
-    quantity: number
-  }[]
-  remark?: string
+export interface OrderFormSubmitItem {
+  courseId: number
+  classId: number
+  textbookId: number
+  quantity: number
 }
 
-/** 教师填报与两级审查（SPEC §6：submit/resubmit/review） */
+/** 教师填报与两级审查（API.md §3.6） */
 export const orderFormApi = {
-  /** 超管/秘书：全院表单分页 */
-  page: (query: PageQuery & { status?: string; collegeId?: number; keyword?: string }) =>
-    http.post<PageResult<OrderForm>>('/order-forms/page', query),
-  detail: (id: number) => http.get<OrderForm>(`/order-forms/${id}`),
-  /** 教师：我的表单分页 */
-  myPage: (query: PageQuery) => http.post<PageResult<OrderForm>>('/order-forms/my/page', query),
-  submit: (data: OrderFormSubmitPayload) =>
-    http.post<{ id: number; fieldCheck: FieldCheckItem[] }>('/order-forms/submit', data),
-  /** 被驳回表单补正重提 */
-  resubmit: (id: number, data: OrderFormSubmitPayload) =>
-    http.post<{ id: number; fieldCheck: FieldCheckItem[] }>(`/order-forms/${id}/resubmit`, data),
-  /** 超管内容审核：通过 / 驳回（理由必填） */
-  review: (id: number, data: { action: 'approve' | 'reject'; comment?: string }) =>
-    http.post<OrderForm>(`/order-forms/${id}/review`, data),
-  /** 教师：我的课程 × 班级（任课关系带出） */
-  myCourses: () => http.get<import('@/types').TeachingAssignment[]>('/order-forms/my/courses'),
+  /** 教师：任课范围（按班级分组） */
+  myCourses: () => http.get<TeacherCourseGroup[]>('/teacher/my-courses'),
+  /** 教师：填报选书器（在库教材检索；keyword 匹配 书名/ISBN/作者/出版社） */
+  searchTextbooks: (keyword?: string) =>
+    http.get<TeacherTextbookOption[]>('/teacher/textbook', { params: { keyword } }),
+  /** 教师：当前学期征订单（无单时 data=null） */
+  myForm: () => http.get<OrderForm | null>('/teacher/order-form'),
+  /** 教师：提交/补正（字段审查不过 → 400 FIELD_CHECK_FAILED + data=[{field,rule,message}]） */
+  submit: (items: OrderFormSubmitItem[]) =>
+    http.post<OrderForm>('/teacher/order-form/submit', { items }),
+  /** 教师：历史提交记录 */
+  myHistory: () => http.get<OrderFormListItem[]>('/teacher/order-forms'),
+  /** 教师：单表单详情（越权 403；教师只能看本人） */
+  detail: (id: number) => http.get<OrderForm>(`/admin/order-forms/${id}`),
+}
+
+/** 复核工作台（超管 /api/admin/order-forms、秘书 /api/secretary/order-forms） */
+export const reviewApi = {
+  /** 超管：全院表单分页 */
+  page: (query: {
+    semesterId?: number
+    collegeId?: number
+    status?: string
+    teacherName?: string
+    page?: number
+    size?: number
+  }) => http.get<PageResult<OrderFormListItem>>('/admin/order-forms', { params: query }),
+  /** 秘书：本院表单分页（只读） */
+  collegePage: (query: { status?: string; teacherName?: string; page?: number; size?: number }) =>
+    http.get<PageResult<OrderFormListItem>>('/secretary/order-forms', { params: query }),
+  /** 详情（含 fieldCheckResult 与明细） */
+  detail: (id: number) => http.get<OrderForm>(`/admin/order-forms/${id}`),
+  /** 内容审核：pass / reject（reject 理由必填 1-200 字；仅 pending_review 可审，否则 409） */
+  review: (id: number, data: { action: 'pass' | 'reject'; reason?: string }) =>
+    http.post<OrderForm>(`/admin/order-forms/${id}/review`, data),
 }

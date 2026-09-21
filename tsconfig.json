@@ -23,10 +23,12 @@
   },
   "include": [
     "src/**/*.ts",
+    "src/**/*.d.ts",
     "src/**/*.vue",
     "tests/**/*.ts",
+    "e2e/**/*.ts",
     "vite.config.ts",
     "vitest.config.ts",
-    "vite.mock.config.ts"
+    "playwright.config.ts"
   ]
 }

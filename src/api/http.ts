@@ -8,24 +8,27 @@ import { CODE, COPY } from '@/utils/constants'
 
 /**
  * 接口消费层（SPEC §6）：
- * - axios 单例，baseURL 固定相对路径 '/api'（硬约束，零域名硬编码）
- * - 响应拦截器解包 { code, message, data } 包络
- * - 401 三类细分（SPEC §5）：access 过期静默 refresh 重放；refresh 失效 / 角色版本失效 / 账号停用强制登出
- * - 并发 401 single-flight：首个 401 触发 refresh，其余请求挂起等待，refresh 期间不重复发起
+ * - axios 单例，baseURL 相对路径 '/api'（硬约束，零域名硬编码）
+ * - 响应拦截器解包 `{code, message, data}` 包络；code 为字符串令牌（后端 ErrorCode 同源）
+ * - 401 三类语义（契约冻结项）：TOKEN_EXPIRED 静默 refresh 重放；
+ *   REFRESH_INVALID / ACCOUNT_DISABLED 强制登出
+ * - 403 FIRST_LOGIN_REQUIRED 跳首登引导（不跳 403 页）；FORBIDDEN 跳 403
+ * - 并发 401 single-flight：首个 401 触发 refresh，其余请求挂起等待
+ * - 文件流接口（模板/同步导出/错误明细/一次性下载）不走包络解包，见 postForFile / downloadBlob
  */
 
 export interface ApiEnvelope<T = unknown> {
-  code: number
-  message: string
+  code: string
+  message?: string
   data: T
 }
 
 export class ApiError extends Error {
-  code: number
+  code: string
   data: unknown
   config: AxiosRequestConfig | undefined
 
-  constructor(message: string, code: number, data?: unknown, config?: AxiosRequestConfig) {
+  constructor(message: string, code: string, data?: unknown, config?: AxiosRequestConfig) {
     super(message)
     this.name = 'ApiError'
     this.code = code
@@ -34,24 +37,33 @@ export class ApiError extends Error {
   }
 }
 
+export interface TokenBundle {
+  accessToken: string
+  refreshToken: string
+  expiresIn?: number
+}
+
 export interface HttpHooks {
   getAccessToken: () => string | null
-  onAccessToken: (token: string) => void
-  /** 强制登出（refresh 失效 / 角色版本失效 / 账号停用） */
+  getRefreshToken: () => string | null
+  /** 登录 / refresh / 切换身份 / 改密后的令牌覆盖 */
+  onTokens: (tokens: TokenBundle) => void
+  /** 强制登出（refresh 失效 / 账号停用） */
   onForceLogout: (message: string) => void
   /** 403 无权限 */
   onForbidden: () => void
-  /** 统一提示 */
-  notify: (message: string, type: 'error' | 'warning') => void
+  /** 403 首登拦截：跳首登引导页 */
+  onFirstLoginRequired: () => void
 }
 
 const noop = () => {}
 const hooks: HttpHooks = {
   getAccessToken: () => null,
-  onAccessToken: noop,
+  getRefreshToken: () => null,
+  onTokens: noop,
   onForceLogout: noop,
   onForbidden: noop,
-  notify: noop,
+  onFirstLoginRequired: noop,
 }
 
 export function configureHttp(next: Partial<HttpHooks>) {
@@ -64,18 +76,35 @@ interface InternalConfig extends AxiosRequestConfig {
   _retried?: boolean
 }
 
-const instance = axios.create({
+/* ---------------- 设备标识（refresh 轮换的会话标识，SPEC §5） ---------------- */
+const DEVICE_ID_KEY = 'textbook.deviceId'
+
+function deviceId(): string {
+  try {
+    let id = sessionStorage.getItem(DEVICE_ID_KEY)
+    if (!id) {
+      id = `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+      sessionStorage.setItem(DEVICE_ID_KEY, id)
+    }
+    return id
+  } catch {
+    return 'web-anonymous'
+  }
+}
+
+export const httpInstance = axios.create({
   baseURL: '/api',
-  timeout: 15000,
+  timeout: 20000,
   headers: { 'Content-Type': 'application/json' },
 })
 
-/* ---------------- 请求拦截：注入 Bearer ---------------- */
-instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+/* ---------------- 请求拦截：注入 Bearer + X-Device-Id ---------------- */
+httpInstance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = hooks.getAccessToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  config.headers['X-Device-Id'] = deviceId()
   return config
 })
 
@@ -84,20 +113,25 @@ let refreshPromise: Promise<string> | null = null
 
 /**
  * 触发 refresh：并发 401 共享同一次 refresh（single-flight），其余请求挂起等待。
- * adapter 透传以复用同一传输通道（测试环境可注入内存适配器）。
+ * 后端要求 refreshToken 置于请求体（不使用 Set-Cookie），轮换后旧 token 立即失效。
+ * adapter 透传以复用同一传输通道（测试环境注入内存适配器）。
  */
 function startRefresh(adapter?: unknown): Promise<string> {
   if (!refreshPromise) {
-    refreshPromise = instance
-      .post<{ accessToken: string }>('/auth/refresh', {}, {
+    const refreshToken = hooks.getRefreshToken()
+    if (!refreshToken) {
+      return Promise.reject(new ApiError(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID))
+    }
+    refreshPromise = httpInstance
+      .post<ApiEnvelope<TokenBundle>>('/auth/refresh', { refreshToken }, {
         _isRefresh: true,
         adapter,
       } as InternalConfig)
       .then((data) => {
-        const token = (data as unknown as { accessToken: string })?.accessToken
-        if (!token) throw new ApiError(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID)
-        hooks.onAccessToken(token)
-        return token
+        const bundle = data as unknown as TokenBundle
+        if (!bundle?.accessToken) throw new ApiError(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID)
+        hooks.onTokens(bundle)
+        return bundle.accessToken
       })
       .finally(() => {
         refreshPromise = null
@@ -106,70 +140,64 @@ function startRefresh(adapter?: unknown): Promise<string> {
   return refreshPromise
 }
 
-function forceLogout(message: string) {
-  hooks.onForceLogout(message)
-}
-
-/* ---------------- 401 / 403 / 409 / 5xx 处理矩阵 ---------------- */
+/* ---------------- 错误分流 ---------------- */
 function rejectWith(
   message: string,
-  code: number,
+  code: string,
   data: unknown,
   config: AxiosRequestConfig | undefined,
 ): Promise<never> {
   return Promise.reject(new ApiError(message, code, data, config))
 }
 
-function handleAuthError(
-  code: number,
-  message: string,
-  data: unknown,
-  config: AxiosRequestConfig,
-): Promise<never> {
-  if (code === CODE.REFRESH_INVALID) {
-    forceLogout(COPY.LOGIN_EXPIRED)
-    return rejectWith(COPY.LOGIN_EXPIRED, code, data, config)
-  }
-  if (code === CODE.ROLE_VERSION_INVALID) {
-    forceLogout(COPY.ROLE_CHANGED)
-    return rejectWith(COPY.ROLE_CHANGED, code, data, config)
+/** 401 三类语义分流；返回是否已处理为强制登出 */
+function handle401(code: string | undefined, fallbackMessage: string): string {
+  if (code === CODE.REFRESH_INVALID || code === CODE.TOKEN_INVALID) {
+    hooks.onForceLogout(COPY.LOGIN_EXPIRED)
+    return COPY.LOGIN_EXPIRED
   }
   if (code === CODE.ACCOUNT_DISABLED) {
-    forceLogout(COPY.ACCOUNT_DISABLED)
-    return rejectWith(COPY.ACCOUNT_DISABLED, code, data, config)
+    hooks.onForceLogout(COPY.ACCOUNT_DISABLED)
+    return COPY.ACCOUNT_DISABLED
   }
-  return rejectWith(message || COPY.FAILED, code, data, config)
+  return fallbackMessage || COPY.LOGIN_EXPIRED
+}
+
+/** blob 错误体（responseType:'blob' 但后端回 JSON 包络）反解 */
+async function envelopeFromBlob(blob: unknown): Promise<ApiEnvelope | undefined> {
+  if (!(blob instanceof Blob)) return undefined
+  try {
+    const text = await blob.text()
+    return JSON.parse(text) as ApiEnvelope
+  } catch {
+    return undefined
+  }
 }
 
 /* ---------------- 响应拦截 ---------------- */
-instance.interceptors.response.use(
+httpInstance.interceptors.response.use(
   (response: AxiosResponse): any => {
     const body = response.data as ApiEnvelope | unknown
     if (body && typeof body === 'object' && 'code' in (body as Record<string, unknown>)) {
       const envelope = body as ApiEnvelope
-      if (envelope.code === CODE.OK) return envelope.data
       const config = response.config as InternalConfig
+      if (envelope.code === CODE.OK) return envelope.data
       const code = envelope.code
       const message = envelope.message || ''
-      if (code === CODE.FORBIDDEN) {
-        hooks.notify(COPY.FORBIDDEN, 'warning')
+      if (code === CODE.FORBIDDEN || code === CODE.RESOURCE_FORBIDDEN) {
         hooks.onForbidden()
-        return rejectWith(COPY.FORBIDDEN, code, envelope.data, config)
+        return rejectWith(message || COPY.FORBIDDEN, code, envelope.data, config)
       }
-      if (code === CODE.WINDOW_CLOSED) {
-        hooks.notify(message || COPY.WINDOW_CLOSED, 'warning')
-        return rejectWith(message || COPY.WINDOW_CLOSED, code, envelope.data, config)
+      if (code === CODE.FIRST_LOGIN_REQUIRED) {
+        hooks.onFirstLoginRequired()
+        return rejectWith(message || COPY.FIRST_LOGIN_REQUIRED, code, envelope.data, config)
       }
-      if (
-        code === CODE.ACCESS_EXPIRED ||
-        code === CODE.REFRESH_INVALID ||
-        code === CODE.ROLE_VERSION_INVALID ||
-        code === CODE.ACCOUNT_DISABLED
-      ) {
-        return handleAuthError(code, message, envelope.data, config)
+      if (code === CODE.REFRESH_INVALID || code === CODE.ACCOUNT_DISABLED) {
+        return rejectWith(handle401(code, message), code, envelope.data, config)
       }
       return rejectWith(message || COPY.FAILED, code, envelope.data, config)
     }
+    // 文件流等非包络响应（同步导出 xlsx、模板下载）
     return body
   },
   async (error: AxiosError<ApiEnvelope>): Promise<never> => {
@@ -178,74 +206,74 @@ instance.interceptors.response.use(
 
     // 网络失败（无响应）
     if (!response) {
-      hooks.notify(COPY.NETWORK, 'error')
-      return rejectWith(COPY.NETWORK, -1, undefined, config)
+      return rejectWith(COPY.NETWORK, 'NETWORK_ERROR', undefined, config)
     }
 
     const status = response.status
-    const envelope = response.data
-    const code = envelope?.code ?? status
+    // responseType:'blob' 的错误体需先反解成 JSON 才能拿到业务码
+    const envelope =
+      response.data && typeof response.data === 'object' && !('code' in response.data)
+        ? ((await envelopeFromBlob(response.data)) ?? undefined)
+        : (response.data as ApiEnvelope | undefined)
+    const code = envelope?.code
     const message = envelope?.message || ''
+    /** 逐字段错误明细等业务数据位于包络 data（如 FIELD_CHECK_FAILED 的 issues 数组） */
+    const detail = envelope?.data
 
     if (status === 401) {
-      // refresh 请求本身 401 → 直接登出
       if (config._isRefresh) {
-        forceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, envelope, config)
+        hooks.onForceLogout(COPY.LOGIN_EXPIRED)
+        return rejectWith(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, detail, config)
       }
-      // 重放后仍 401 → 不再刷新，直接登出
+      // 未持有 access token 的 401 = 「未登录」而非「会话过期」：
+      // 公共页（登录页）的并发请求不应触发刷新与强制登出提示
+      if (!hooks.getAccessToken()) {
+        return rejectWith(message || COPY.LOGIN_EXPIRED, code ?? CODE.UNAUTHORIZED, detail, config)
+      }
+      // 已重放仍 401 → 不再刷新
       if (config._retried) {
-        forceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, CODE.ACCESS_EXPIRED, envelope, config)
+        hooks.onForceLogout(COPY.LOGIN_EXPIRED)
+        return rejectWith(COPY.LOGIN_EXPIRED, CODE.TOKEN_EXPIRED, detail, config)
       }
-      // 三类细分：仅 access 过期走静默刷新，其余强制登出
-      if (code === CODE.REFRESH_INVALID) {
-        forceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, code, envelope, config)
+      // 明确非「access 过期」的语义：直接返回业务文案，不触发 refresh
+      if (
+        code === CODE.LOGIN_FAILED ||
+        code === CODE.ACCOUNT_LOCKED ||
+        code === CODE.FIRST_LOGIN_VERIFY_FAILED
+      ) {
+        return rejectWith(message || COPY.BAD_CREDENTIAL, code, detail, config)
       }
-      if (code === CODE.ROLE_VERSION_INVALID) {
-        forceLogout(COPY.ROLE_CHANGED)
-        return rejectWith(COPY.ROLE_CHANGED, code, envelope, config)
+      if (code === CODE.REFRESH_INVALID || code === CODE.ACCOUNT_DISABLED) {
+        return rejectWith(handle401(code, message), code, detail, config)
       }
-      if (code === CODE.ACCOUNT_DISABLED) {
-        forceLogout(COPY.ACCOUNT_DISABLED)
-        return rejectWith(COPY.ACCOUNT_DISABLED, code, envelope, config)
-      }
-      // access 过期（含未细分错误码）→ single-flight refresh 后重放
+      // access 过期（TOKEN_EXPIRED / UNAUTHORIZED / 未细分）→ single-flight refresh 后重放
       try {
         await startRefresh(config.adapter)
       } catch {
-        forceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, envelope, config)
+        hooks.onForceLogout(COPY.LOGIN_EXPIRED)
+        return rejectWith(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, detail, config)
       }
-      return instance.request({
+      return httpInstance.request({
         ...(config as AxiosRequestConfig),
         _retried: true,
       } as InternalConfig)
     }
 
     if (status === 403) {
-      hooks.notify(COPY.FORBIDDEN, 'warning')
-      hooks.onForbidden()
-      return rejectWith(COPY.FORBIDDEN, CODE.FORBIDDEN, envelope, config)
-    }
-
-    if (status === 409) {
-      hooks.notify(message || COPY.WINDOW_CLOSED, 'warning')
-      return rejectWith(message || COPY.WINDOW_CLOSED, CODE.WINDOW_CLOSED, envelope, config)
-    }
-
-    if (status === 422) {
-      return rejectWith(message || COPY.FAILED, CODE.FIELD_CHECK_FAILED, envelope, config)
+      if (code === CODE.FIRST_LOGIN_REQUIRED) {
+        hooks.onFirstLoginRequired()
+      } else {
+        hooks.onForbidden()
+      }
+      return rejectWith(message || COPY.FORBIDDEN, code ?? CODE.FORBIDDEN, detail, config)
     }
 
     if (status >= 500) {
-      hooks.notify(COPY.SERVER_ERROR, 'error')
-      return rejectWith(COPY.SERVER_ERROR, status, envelope, config)
+      return rejectWith(COPY.SERVER_ERROR, code ?? CODE.SERVER_ERROR, detail, config)
     }
 
-    hooks.notify(message || COPY.FAILED, 'error')
-    return rejectWith(message || COPY.FAILED, code, envelope, config)
+    // 400 / 404 / 409 / 410 / 429：保留后端业务码、文案与逐字段明细（前端按码分流）
+    return rejectWith(message || COPY.FAILED, code ?? String(status), detail, config)
   },
 )
 
@@ -262,25 +290,111 @@ export interface HttpClient {
 
 export const http: HttpClient = {
   get: <T>(url: string, config?: AxiosRequestConfig) =>
-    instance.get(url, config) as unknown as Promise<T>,
+    httpInstance.get(url, config) as unknown as Promise<T>,
   post: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
-    instance.post(url, data, config) as unknown as Promise<T>,
+    httpInstance.post(url, data, config) as unknown as Promise<T>,
   put: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
-    instance.put(url, data, config) as unknown as Promise<T>,
+    httpInstance.put(url, data, config) as unknown as Promise<T>,
   delete: <T>(url: string, config?: AxiosRequestConfig) =>
-    instance.delete(url, config) as unknown as Promise<T>,
-  request: <T>(config: AxiosRequestConfig) => instance.request(config) as unknown as Promise<T>,
+    httpInstance.delete(url, config) as unknown as Promise<T>,
+  request: <T>(config: AxiosRequestConfig) => httpInstance.request(config) as unknown as Promise<T>,
 }
 
-/** 文件下载（导出）：走 blob，按 Content-Disposition 解析文件名 */
-export async function downloadFile(
-  url: string,
-  params?: Record<string, unknown>,
-): Promise<{ blob: Blob; fileName: string }> {
-  const blob = await http.post<Blob>(url, params, { responseType: 'blob' })
-  const fileName = 'download.xlsx'
-  return { blob, fileName }
+/* ---------------- 文件流 ---------------- */
+
+/** 从 Content-Disposition 解析文件名（兼容 filename*=UTF-8''x 与 filename="x"） */
+export function parseFileName(disposition: string | undefined, fallback: string): string {
+  if (!disposition) return fallback
+  const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8?.[1]) {
+    try {
+      return decodeURIComponent(utf8[1].trim())
+    } catch {
+      return utf8[1].trim()
+    }
+  }
+  const plain = disposition.match(/filename="?([^";]+)"?/i)
+  return plain?.[1]?.trim() || fallback
 }
+
+export interface FileResult {
+  blob: Blob
+  fileName: string
+}
+
+/** 导出/模板下载（GET 文件流） */
+export async function downloadBlob(
+  url: string,
+  config: AxiosRequestConfig = {},
+  fallbackName = 'download.xlsx',
+): Promise<FileResult> {
+  const response = await httpInstance.request<Blob>({
+    url,
+    method: 'GET',
+    responseType: 'blob',
+    ...config,
+  })
+  return {
+    blob: response.data,
+    fileName: parseFileName(
+      response.headers['content-disposition'] as string | undefined,
+      fallbackName,
+    ),
+  }
+}
+
+/** 导出类接口的两种形态：同步回 xlsx 流，异步回 {taskId, async, rowEstimate} */
+export type ExportDispatch<T> =
+  { kind: 'file'; blob: Blob; fileName: string } | { kind: 'async'; data: T }
+
+/**
+ * 导出接口分流：以响应 Content-Type 判定（application/json → 异步任务；其余 → xlsx 文件流）。
+ * 后端同步/异步由 export.sync_row_threshold 裁决，前端不预估。
+ */
+export async function postForExport<T = unknown>(
+  url: string,
+  body?: unknown,
+  fallbackName = 'export.xlsx',
+): Promise<ExportDispatch<T>> {
+  const response = await httpInstance.post(url, body ?? {}, { responseType: 'blob' })
+  const contentType = String(response.headers['content-type'] || '')
+  if (contentType.includes('application/json')) {
+    const text = await (response.data as Blob).text()
+    const envelope = JSON.parse(text) as ApiEnvelope<T>
+    if (envelope.code !== CODE.OK) {
+      throw new ApiError(
+        envelope.message || COPY.FAILED,
+        envelope.code,
+        envelope.data,
+        response.config,
+      )
+    }
+    return { kind: 'async', data: envelope.data }
+  }
+  return {
+    kind: 'file',
+    blob: response.data as Blob,
+    fileName: parseFileName(
+      response.headers['content-disposition'] as string | undefined,
+      fallbackName,
+    ),
+  }
+}
+
+/** 错误明细下载（GET 文件流，无错误行时后端 404） */
+export const downloadErrorDetail = (batchId: number) =>
+  downloadBlob(`/batch/${batchId}/errors`, {}, `导入错误明细-${batchId}.xlsx`)
+
+/** 一次性授权下载（token 单次有效，复用/过期 410） */
+export const downloadExportTask = (taskId: number, token: string, fallbackName = '导出数据.xlsx') =>
+  downloadBlob(`/export-task/${taskId}/download`, { params: { token } }, fallbackName)
+
+export const downloadSupplierExportTask = (taskId: number, token: string) =>
+  downloadBlob(
+    `/supplier/export-task/${taskId}/download`,
+    { params: { token } },
+    `supplier-orders-${taskId}.xlsx`,
+  )
 
 export function triggerBrowserDownload(blob: Blob, fileName: string) {
   const link = document.createElement('a')

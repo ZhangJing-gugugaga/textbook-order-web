@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import GlobalBlockingNotice from '@/components/GlobalBlockingNotice.vue'
 import { useNoticeStore } from '@/stores/notice'
-import type { NoticeTask } from '@/types'
+import type { UnconfirmedNotice } from '@/types'
 
 vi.mock('@/api/notice', () => ({
   noticeApi: {
@@ -15,32 +15,22 @@ vi.mock('@/api/notice', () => ({
 
 import { noticeApi } from '@/api/notice'
 
-const tasks: NoticeTask[] = [
+const tasks: UnconfirmedNotice[] = [
   {
-    id: 4001,
+    taskId: 4001,
     title: '教材征订窗口已开启',
     content: '请在截止时间前完成填报。',
-    source: 'system',
-    scope: '全员',
-    status: 'sending',
-    totalCount: 3,
-    sentCount: 3,
-    confirmedCount: 0,
-    failedCount: 0,
+    source: 'system_window_change',
     createdAt: '2026-09-18 08:00',
+    roundStopped: false,
   },
   {
-    id: 4002,
+    taskId: 4002,
     title: '征订窗口已延长',
     content: '请尽快提交。',
-    source: 'system',
-    scope: '全员',
-    status: 'sending',
-    totalCount: 3,
-    sentCount: 3,
-    confirmedCount: 0,
-    failedCount: 0,
+    source: 'system_window_change',
     createdAt: '2026-09-20 08:00',
+    roundStopped: false,
   },
 ]
 

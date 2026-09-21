@@ -1,0 +1,15 @@
+# 构建与工具产物（不参与格式门禁）
+dist
+coverage
+logs
+node_modules
+playwright-report
+test-results
+
+# 由 unplugin-auto-import / unplugin-vue-components 生成
+src/types/auto-imports.d.ts
+src/types/components.d.ts
+
+# 包管理器锁文件与二进制资产
+package-lock.json
+*.xlsx

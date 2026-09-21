@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, type Component } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
 /**
@@ -9,7 +9,7 @@ const props = defineProps<{
   code: string | string[]
   type?: 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'default'
   size?: 'large' | 'default' | 'small'
-  icon?: unknown
+  icon?: string | Component
   loading?: boolean
   disabled?: boolean
   text?: boolean

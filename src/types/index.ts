@@ -1,77 +1,118 @@
 /**
  * 领域模型类型（MVP）
- * 说明：字段命名对齐 03 号文档 M1 契约冻结前的提议值，契约冻结后仅需调整本文件与 api 层映射。
+ * 字段来源：后端 API.md V1.0.0 + 实测响应（联调基线 probe-baseline.json），
+ * 与后端 VO/entity 逐字段一致（含后端实体透出的审计字段）。
  */
 
-/** 角色枚举（前端仅用于展示与数据范围推断，鉴权一律以权限码为准） */
-export type RoleCode = 'admin' | 'secretary' | 'teacher' | 'student' | 'supplier'
+/** 角色码（后端 sys_role.role_code） */
+export type RoleCode = 'ADMIN' | 'SECRETARY' | 'TEACHER' | 'STUDENT' | 'SUPPLIER'
 
-/** 登录用户 */
-export interface UserInfo {
-  id: number
+/** 登录响应（AuthResponse） */
+export interface AuthResult {
+  accessToken: string
+  refreshToken: string
+  /** access 有效期（秒） */
+  expiresIn: number
+  mustChangePassword: boolean
+  firstLoginVerified: boolean
+  roles: RoleCode[]
+  currentRole: RoleCode
   userNo: string
   name: string
-  roles: RoleCode[]
-  /** 当前身份（多角色切换后变化） */
-  currentRole: RoleCode
-  /** 数据范围：学院 id 列表（秘书/教师/学生由后端下发） */
-  collegeIds: number[]
-  mustChangePassword: boolean
 }
 
-export interface PermissionBundle {
+/** active 学期归属摘要（GET /me 内嵌） */
+export interface ActiveSemesterBrief {
+  id: number
+  name: string
+  windowStatus: WindowStatus
+  channelOpen: number
+}
+
+/** 登录用户（GET /api/me） */
+export interface UserInfo {
+  userId: number
+  userNo: string
+  name: string
+  phone?: string
+  openidBound: boolean
   roles: RoleCode[]
-  permissions: string[]
   currentRole: RoleCode
-  /** 角色版本号：失效时后端返回 40103 */
-  roleVersion: number
+  permissions: string[]
+  /** 1/0 */
+  mustChangePassword: number
+  /** 1/0 */
+  firstLoginVerified: number
+  semesterId?: number
+  collegeId?: number
+  collegeName?: string
+  classId?: number
+  className?: string
+  activeSemester?: ActiveSemesterBrief | null
 }
 
 /** 时间窗口三态（PRD 功能 2） */
 export type WindowStatus = 'not_open' | 'open' | 'closed'
 
+/** GET /api/semester/window/status */
 export interface WindowState {
-  status: WindowStatus
-  windowStart: string
-  windowEnd: string
   serverTime: string
-  semesterId: number
-  semesterName: string
+  semesterId: number | null
+  semesterName: string | null
+  windowStatus: WindowStatus | null
+  windowStart: string | null
+  windowEnd: string | null
+  /** 1 开放 / 0 关闭（学生通道） */
+  channelOpen: number | null
+  activeStatus: string | null
 }
 
-/** 通用分页结果 */
-export interface PageResult<T> {
-  list: T[]
-  total: number
-}
-
+/** 通用分页请求（page 从 1 开始，size 上限 200） */
 export interface PageQuery {
   page: number
   size: number
   [key: string]: unknown
 }
 
-/* ---------------- 组织 ---------------- */
+/** 通用分页结果（PageResponse） */
+export interface PageResult<T> {
+  list: T[]
+  page: number
+  size: number
+  total: number
+  totalPages: number
+}
+
+/** 字段审查问题项（FieldCheckIssue） */
+export interface FieldCheckIssue {
+  field: string
+  rule: string
+  message: string
+}
+
+/* ---------------- 组织三表 ---------------- */
 export interface College {
   id: number
   name: string
-  code: string
+  fullName?: string
+  createdAt?: string
+  updatedAt?: string
 }
+
 export interface Major {
   id: number
   collegeId: number
   name: string
+  fullName?: string
 }
+
 export interface Klass {
   id: number
   majorId: number
-  collegeId: number
   name: string
-  /** 班级人数（教师填报数量上限） */
-  studentCount: number
-}
-export interface OrgTree extends College {
-  majors: (Major & { classes: Klass[] })[]
+  grade?: string
+  /** 班级人数（教师征订数量上限来源） */
+  studentCount?: number
 }
 
 /* ---------------- 教材库 ---------------- */
@@ -79,132 +120,174 @@ export interface Textbook {
   id: number
   isbn: string
   title: string
-  author: string
-  publisher: string
-  edition: string
-  price: number
-  /** 在库 / 停用 */
-  status: 'active' | 'disabled'
-  createdAt: string
+  edition?: string
+  author?: string
+  /** 出版社（后端字段名 press） */
+  press?: string
+  price?: number
+  /** 1 在库 / 0 停用 */
+  status: number
+  createdAt?: string
+  updatedAt?: string
 }
 
 /* ---------------- 课程与任课 ---------------- */
 export interface Course {
   id: number
-  code: string
+  semesterId: number
+  code?: string
   name: string
-  collegeId: number
-  credit: number
 }
-export interface TeachingAssignment {
+
+/** GET /api/admin/teacher-course */
+export interface TeacherCourse {
   id: number
-  courseId: number
-  courseName: string
+  semesterId: number
   teacherId: number
   teacherName: string
+  courseId: number
+  courseName: string
   classId: number
   className: string
-  collegeId: number
-  semesterId: number
 }
 
 /* ---------------- 学期与窗口 ---------------- */
-export type SemesterStatus = 'draft' | 'active' | 'archived'
+export type SemesterActiveStatus = 'draft' | 'active' | 'archived'
 
 export interface Semester {
   id: number
   name: string
   startDate: string
   endDate: string
-  status: SemesterStatus
   windowStart: string
   windowEnd: string
-  autoOpen: boolean
-  autoClose: boolean
-  createdAt: string
+  channelOpen: number
+  /** 1 到点自动开启 / 0 仅手动 */
+  autoOpen: number
+  autoClose: number
+  windowStatus: WindowStatus
+  activeStatus: SemesterActiveStatus
+  /** 乐观锁版本（activate 需原样回传） */
+  version: number
+  createdAt?: string
+  updatedAt?: string
 }
 
-export interface WindowChangeRecord {
+/** 审计日志（窗口变更记录 = action/resource 过滤后的审计） */
+export interface AuditLog {
   id: number
-  semesterId: number
-  action: 'open' | 'close' | 'extend' | 'activate' | 'archive'
-  operatorName: string
-  createdAt: string
-  fromValue: string
-  toValue: string
+  userId?: number
+  userNo?: string
+  action: string
+  resource: string
+  resourceId?: string
+  detailJson?: Record<string, unknown>
+  ip?: string
+  at: string
 }
 
-/* ---------------- 账号 ---------------- */
+/* ---------------- 账号（UserListItem） ---------------- */
 export interface Account {
   id: number
   userNo: string
   name: string
-  role: RoleCode
-  collegeId: number | null
-  collegeName: string
-  status: 'active' | 'disabled'
-  mustChangePassword: boolean
-  createdAt: string
+  phone?: string
+  collegeId?: number
+  collegeName?: string
+  classId?: number
+  className?: string
+  /** 1 正常 / 0 停用 */
+  status: number
+  /** 1 待改密 / 0 已改密 */
+  mustChangePassword: number
+  firstLoginVerified: number
+  openidBound?: boolean
+  lockUntil?: string
+  roles: RoleCode[]
+  createdAt?: string
 }
 
-/* ---------------- 师生 ---------------- */
-export interface Person {
-  id: number
-  userNo: string
-  name: string
-  type: 'student' | 'teacher'
-  gender: 'M' | 'F'
-  collegeId: number
-  collegeName: string
-  majorId: number | null
-  majorName: string
-  classId: number | null
-  className: string
-  phone: string
-  status: 'active' | 'disabled'
-}
-
-/* ---------------- 导入批次 ---------------- */
-export type BatchStatus = 'parsing' | 'success' | 'partial' | 'failed'
+/* ---------------- 导入批次（ImportBatch） ---------------- */
+export type BatchStatus = 'running' | 'done' | 'failed'
 
 export interface ImportBatch {
-  batchId: string
-  bizType: 'student' | 'teacher' | 'textbook' | 'course' | 'change'
-  fileName: string
+  id: number
+  bizType: string
+  semesterId?: number
+  fileName?: string
+  total?: number
+  okCount?: number
+  errorCount?: number
+  progressPct?: number
   status: BatchStatus
-  progressPct: number
-  totalRows: number
-  successRows: number
-  errorRows: number
-  message: string
-  createdAt: string
-  /** 错误行预览（前 N 行，万行走错误明细下载） */
-  errorPreview: { row: number; reason: string }[]
+  errorDetail?: { row?: number; reason?: string; [k: string]: unknown }[]
+  batchNo?: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 /* ---------------- 异动申请 ---------------- */
-export type ChangeStatus = 'pending' | 'approved' | 'rejected'
+export type ChangeStatus = 'pending_field_check' | 'pending_review' | 'approved' | 'rejected'
 
+export type ChangeType = 'student' | 'teacher'
+
+/** ChangeRequestVO（提交端与审批详情） */
 export interface ChangeRequest {
   id: number
-  batchId: string | null
   semesterId: number
-  studentNo: string
-  studentName: string
-  type: 'transfer_in' | 'transfer_out' | 'suspend' | 'resume' | 'info_fix'
-  reason: string
-  submitterName: string
-  status: ChangeStatus
+  type: ChangeType | string
+  targetUserId?: number
+  targetUserNo: string
+  targetUserName?: string
+  beforeCollegeId?: number
+  beforeCollegeName?: string
+  beforeClassId?: number
+  beforeClassName?: string
+  afterCollegeId?: number
+  afterCollegeName?: string
+  afterClassId?: number
+  afterClassName?: string
+  status: ChangeStatus | string
+  batchNo?: string
+  applicantId?: number
+  applicantName?: string
+  reviewerId?: number
+  reason?: string
   /** 系统字段审查结果 */
-  fieldCheck: FieldCheckItem[] | null
-  reviewComment: string | null
-  reviewedBy: string | null
-  createdAt: string
+  fieldCheckResult?: FieldCheckIssue[]
+  reviewAt?: string
+  createdAt?: string
+}
+
+/** ChangeRequestListItem（审批列表） */
+export interface ChangeRequestListItem {
+  id: number
+  semesterId: number
+  type: ChangeType | string
+  targetUserId?: number
+  targetUserName?: string
+  targetUserNo?: string
+  currentCollegeName?: string
+  currentClassName?: string
+  /** { before:{collegeId,classId}, after:{collegeId,classId} } */
+  payloadJson?: {
+    before?: { collegeId?: number; classId?: number }
+    after?: { collegeId?: number; classId?: number }
+  }
+  status: ChangeStatus | string
+  batchNo?: string
+  applicantId?: number
+  applicantName?: string
+  reason?: string
+  createdAt?: string
+  reviewAt?: string
 }
 
 /* ---------------- 教师填报（两级审查） ---------------- */
-export type OrderFormStatus = 'draft' | 'pending_review' | 'reviewed' | 'rejected'
+export type OrderFormStatus =
+  'draft' | 'pending_review' | 'reviewed' | 'rejected' | 'rejected_auto' | 'submitted'
 
+/** OrderFormItemVO */
 export interface OrderFormItem {
   id: number
   courseId: number
@@ -214,122 +297,258 @@ export interface OrderFormItem {
   textbookId: number
   textbookTitle: string
   isbn: string
-  price: number
   quantity: number
 }
 
+/** OrderFormDetailVO */
 export interface OrderForm {
   id: number
   semesterId: number
+  semesterName: string
   teacherId: number
-  teacherName: string
-  collegeId: number
-  collegeName: string
   status: OrderFormStatus
+  fieldCheckResult?: FieldCheckIssue[]
+  submittedAt?: string
+  reviewAt?: string
+  reviewBy?: number
+  reviewNote?: string
+  /** 补正截止时间（被驳回后下发） */
+  correctDeadline?: string
   items: OrderFormItem[]
-  /** 系统字段审查结果（逐字段） */
-  fieldCheck: FieldCheckItem[] | null
-  reviewComment: string | null
-  reviewedBy: string | null
-  createdAt: string
-  updatedAt: string
+  itemCount: number
+  totalQuantity: number
 }
 
-export interface FieldCheckItem {
-  field: string
-  rule: string
-  passed: boolean
-  message: string
+/** OrderFormListItem（列表/历史） */
+export interface OrderFormListItem {
+  id: number
+  semesterId: number
+  semesterName?: string
+  teacherId: number
+  teacherName?: string
+  teacherNo?: string
+  collegeId?: number
+  collegeName?: string
+  status: OrderFormStatus
+  submittedAt?: string
+  reviewAt?: string
+  reviewNote?: string
+  correctDeadline?: string
+  itemCount: number
+  totalQuantity: number
+}
+
+/** 教师任课范围（GET /api/teacher/my-courses） */
+export interface TeacherCourseGroup {
+  classId: number
+  className: string
+  courses: { courseId: number; courseName: string }[]
+}
+
+/** 教师选书器选项（GET /api/teacher/textbook，仅在库教材） */
+export interface TeacherTextbookOption {
+  textbookId: number
+  isbn: string
+  title: string
+  edition?: string
+  author?: string
+  press?: string
+  price?: number
 }
 
 /* ---------------- 学生选购 ---------------- */
-export interface StudentOrderItem {
+/** StudentBookVO（本班教材清单） */
+export interface StudentBook {
   textbookId: number
-  textbookTitle: string
   isbn: string
-  price: number
-  edition: string
-  publisher: string
-  author: string
+  title: string
+  edition?: string
+  author?: string
+  press?: string
+  price?: number
+  /** 必修 */
   required: boolean
-  quantity: number
-  checked: boolean
+  /** 已下架（不可选，仅提示） */
+  delisted: boolean
 }
 
+/** StudentOrderItemVO */
+export interface StudentOrderItem {
+  id: number
+  textbookId: number
+  isbn: string
+  title: string
+  edition?: string
+  author?: string
+  press?: string
+  price?: number
+  delisted?: boolean
+  quantity: number
+  courseId?: number
+}
+
+/** StudentOrderDetailVO */
 export interface StudentOrder {
   id: number
   semesterId: number
   semesterName: string
-  studentId: number
-  classId: number
-  className: string
+  status: string
+  submitSnapshot?: {
+    collegeId?: number
+    collegeName?: string
+    classId?: number
+    className?: string
+  }
+  submittedAt?: string
   items: StudentOrderItem[]
-  totalAmount: number
   totalQuantity: number
-  submittedAt: string
+}
+
+/** StudentOrderListItem（历史记录） */
+export interface StudentOrderListItem {
+  id: number
+  semesterId: number
+  semesterName?: string
+  studentId: number
+  studentName?: string
+  studentNo?: string
+  collegeId?: number
+  collegeName?: string
+  classId?: number
+  className?: string
+  status: string
+  submittedAt?: string
+  submitSnapshot?: Record<string, unknown>
+  totalQuantity: number
 }
 
 /* ---------------- 通知 ---------------- */
-export interface NoticeTask {
-  id: number
+/** UnconfirmedNoticeItem（阻塞弹窗数据源） */
+export interface UnconfirmedNotice {
+  taskId: number
   title: string
   content: string
-  /** manual=手动创建；system=窗口变更自动创建（只读） */
-  source: 'manual' | 'system'
-  scope: string
-  status: 'sending' | 'finished' | 'closed'
-  totalCount: number
-  sentCount: number
-  confirmedCount: number
-  failedCount: number
-  createdAt: string
+  /** manual 手动 / system_window_change 窗口变更自动 */
+  source: string
+  createdAt?: string
+  roundStopped: boolean
 }
 
-export interface NoticeFailure {
+/** NoticeTaskListItem */
+export interface NoticeTask {
   id: number
-  taskId: number
-  userName: string
-  userNo: string
-  role: RoleCode
-  reason: string
-  round: number
-  createdAt: string
-}
-
-/* ---------------- 供货商 ---------------- */
-export interface SupplierOrderRow {
-  id: number
+  semesterId: number
   title: string
-  isbn: string
+  content: string
+  targetRoles?: string
+  roundLimit?: number
+  intervalHours?: number
+  source: string
+  status: string
+  createdAt?: string
+  closedBy?: number
+  closedAt?: string
+}
+
+/** NoticeProgressResponse */
+export interface NoticeProgress {
+  sent: number
+  unauthorized: number
+  failed: number
+  confirmed: number
+  roundLimit: number
+}
+
+/** NoticeFailureItem（线下兜底名单） */
+export interface NoticeFailure {
+  userId: number
+  userNo: string
+  name: string
+  role: string
+  collegeId?: number
+  collegeName?: string
+  classId?: number
+  className?: string
+  sendStatus: string
+  roundNo?: number
+  sentAt?: string
+}
+
+/* ---------------- 供货商（只读四类字段） ---------------- */
+export interface SupplierOrderItem {
   teacherName: string
+  isbn: string
+  title: string
+  quantity: number
+}
+
+export interface SupplierCollegeGroup {
+  collegeId: number
   collegeName: string
+  items: SupplierOrderItem[]
 }
 
 /* ---------------- 数据看板 ---------------- */
+export interface CollegeProgress {
+  collegeId: number
+  collegeName: string
+  teacherTotal: number
+  submitted: number
+  pendingReview: number
+  reviewed: number
+  rejected: number
+}
+
 export interface DashboardStats {
-  windowStatus: WindowStatus
-  windowEnd: string
-  semesterName: string
-  colleges: {
-    collegeId: number
-    collegeName: string
-    teacherTotal: number
-    submitted: number
-    reviewed: number
-    studentTotal: number
-    studentOrdered: number
-  }[]
-  pendingReviewCount: number
-  unconfirmedNoticeCount: number
+  semesterId: number | null
+  windowStatus: WindowStatus | null
+  channelOpen: number | null
+  serverTime: string
+  colleges: CollegeProgress[]
+  pendingReviewTotal: number
+  unconfirmedNoticeTotal: number
+  studentOrderTotal: number
+  studentSubmittedTotal: number
 }
 
 /* ---------------- 导出任务 ---------------- */
+export type ExportTaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'expired'
+
 export interface ExportTask {
-  taskId: string
-  name: string
-  status: 'pending' | 'running' | 'success' | 'failed'
-  progressPct: number
-  estimatedRows: number
-  message: string
-  createdAt: string
+  id: number
+  bizType: string
+  paramsJson?: Record<string, unknown>
+  rowEstimate?: number
+  downloadToken?: string
+  tokenExpireAt?: string
+  expiresAt?: string
+  status: ExportTaskStatus
+  progressPct?: number
+  errorMsg?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 异步导出受理结果（同步导出时后端直接回 xlsx 流，无此结构） */
+export interface AsyncExportAccepted {
+  taskId: number
+  async: true
+  rowEstimate?: number
+}
+
+/** 异动 Excel 批量提交结果 */
+export interface ChangeImportResult {
+  batchId: number
+  batchNo: string
+  total: number
+  okCount: number
+  errorCount: number
+}
+
+/** 系统配置项 */
+export interface SystemConfigItem {
+  id: number
+  configKey: string
+  configValue: string
+  remark?: string
 }
