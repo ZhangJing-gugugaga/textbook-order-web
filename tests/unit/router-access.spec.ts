@@ -148,6 +148,8 @@ describe('回归（2026-09-22 线上缺陷）：超管的侧边栏不得出现�
   })
 
   it('各角色菜单项与 SPEC §4 页面归属一致', () => {
+    // 秘书即便持有 export:order:create，也不得看到「导出中心」——该页归属超管，
+    // 秘书进入会因页面拉取超管专属数据而吃 403 被弹走（矩阵走查发现）
     expect(
       visibleMenuTitles(
         [
@@ -159,7 +161,7 @@ describe('回归（2026-09-22 线上缺陷）：超管的侧边栏不得出现�
         ],
         ['SECRETARY'],
       ),
-    ).toEqual(['导出中心', '本院征订记录', '本院导出（签字版）', '窗口状态', '异动申请'])
+    ).toEqual(['本院征订记录', '本院导出（签字版）', '窗口状态', '异动申请'])
     expect(
       visibleMenuTitles(
         ['semester:window:view', 'order:form:submit', 'order:form:view:self'],

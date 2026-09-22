@@ -102,6 +102,17 @@ test.describe('按钮级权限（PermButton 无权限移除 DOM）', () => {
     await page.goto('./export-center')
     await expect(page).toHaveURL(/\/403$/)
   })
+
+  test('回归：秘书虽有 export:order:create，导出中心仍不可达（该页归属超管）', async ({ page }) => {
+    // 2026-09-22 全页面矩阵走查发现：秘书进导出中心会因页面拉取超管专属数据
+    // 而吃 403 被全局处理弹走（菜单能点、进去被拦）。修复为按角色归属隐藏 + 守卫拦截。
+    await mockApi(page, ROLES.SECRETARY)
+    await loginAs(page, ROLES.SECRETARY)
+    const menu = page.locator('.app-menu')
+    await expect(menu.getByText('导出中心', { exact: true })).toHaveCount(0)
+    await page.goto('./export-center')
+    await expect(page).toHaveURL(/\/403$/)
+  })
 })
 
 test.describe('供货商物理隔离', () => {

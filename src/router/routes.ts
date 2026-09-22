@@ -165,6 +165,11 @@ export const routes: RouteRecordRaw[] = [
           title: '导出中心',
           icon: 'Download',
           permission: 'export:order:create',
+          // 秘书虽有 export:order:create（后端支持「秘书本院」范围），但本页会无条件拉取
+          // 学院列表 / 通知任务 / 全院表单等超管专属数据 → 秘书进来立刻吃 403 被弹到 /403 页
+          // （2026-09-22 全页面矩阵走查发现）。SPEC §4 亦将该页归属超管；
+          // 秘书的导出入口是「本院导出（签字版）」。故此处限定归属角色，避免菜单能点、进去被拦。
+          roles: ['ADMIN'],
           group: '教材室',
         },
       },

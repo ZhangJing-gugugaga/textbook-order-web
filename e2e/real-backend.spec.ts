@@ -41,6 +41,58 @@ const ACCOUNT = {
 
 type RoleKey = keyof typeof ACCOUNT
 
+/** 全部页面路径（与 src/router/routes.ts 的 children 逐项一致） */
+const ALL_PAGES = [
+  'profile',
+  'dashboard',
+  'accounts',
+  'org',
+  'semester-window',
+  'textbooks',
+  'courses',
+  'people',
+  'review',
+  'order-data',
+  'export-center',
+  'notices',
+  'college-records',
+  'college-export',
+  'window-status',
+  'change-requests',
+  'my-courses',
+  'order-form',
+  'my-submissions',
+  'book-select',
+  'my-orders',
+  'purchase-list',
+  'supplier-export',
+]
+
+/**
+ * 期望可访问矩阵（显式声明，不靠菜单反推）。
+ * `profile` 全员可用；其余按路由 meta 的 roles 归属。
+ */
+const ALLOWED_PAGES: Record<string, string[]> = {
+  ADMIN: [
+    'profile',
+    'dashboard',
+    'accounts',
+    'org',
+    'semester-window',
+    'textbooks',
+    'courses',
+    'people',
+    'review',
+    'order-data',
+    'export-center',
+    'notices',
+  ],
+  SECRETARY: ['profile', 'college-records', 'college-export', 'window-status', 'change-requests'],
+  TEACHER: ['profile', 'change-requests', 'my-courses', 'order-form', 'my-submissions'],
+  STUDENT: ['profile', 'book-select', 'my-orders'],
+  SUPPLIER: ['profile', 'purchase-list', 'supplier-export'],
+}
+
 /** 登录并消费掉可能出现的阻塞通知弹窗（种子库可能存在未确认通知） */
 async function realLogin(page: Page, key: RoleKey) {
   const { userNo, password } = ACCOUNT[key]
@@ -187,6 +239,57 @@ test.describe('真实后端走查：五角色落地页与菜单（无桩）', ()
     const body = await page.locator('body').innerText()
     for (const studentField of ['学号', '学生姓名', '班级人数']) {
       expect(body).not.toContain(studentField)
+    }
+  })
+
+  /**
+   * 全角色 × 全页面矩阵（23 页面 × 5 角色）。
+   *
+   * 断言每个页面在「有权角色」下正常渲染（不出现错误态），在「无权角色」下落 403。
+   * 2026-09-22 用同款矩阵发现过一处「菜单能点、进去被拦」的缺陷（秘书进导出中心
+   * 因页面拉取超管专属数据而吃 403 被弹走），故固化为常驻用例。
+   *
+   * 期望矩阵显式列出（不靠菜单反推）：`profile` 全员可用，其余按角色归属。
+   */
+  test('全角色 × 全页面矩阵：有权页面正常渲染、无权页面落 403', async ({ browser }) => {
+    // 115 次页面加载（23 页 × 5 角色），远超默认 30s 用例超时
+    test.setTimeout(600_000)
+    const baseURL = test.info().project.use.baseURL as string
+
+    for (const { key, role } of CASES) {
+      // 每个角色用**全新上下文**：同一上下文里 localStorage 共享，
+      // 带着上一个角色的会话访问 /login 会被守卫弹到它的落地页，登录表单根本不渲染
+      const context = await browser.newContext({ baseURL })
+      const page = await context.newPage()
+
+      await realLogin(page, key)
+      for (const path of ALL_PAGES) {
+        // 不用 networkidle（每页多等约 1s，115 次会拖到 5 分钟以上）：
+        // 等到「布局已渲染」或「已被守卫拦走」这个确定性条件即可
+        await page.goto(`./${path}`, { waitUntil: 'domcontentloaded' })
+        await page.waitForFunction(
+          () =>
+            document.querySelector('.app-wrapper') !== null ||
+            /\/403$|\/404$|\/login$/.test(location.pathname),
+          undefined,
+          { timeout: 20_000 },
+        )
+        const landed = new URL(page.url()).pathname.split('/').pop() ?? ''
+        const shouldBeAllowed = ALLOWED_PAGES[role].includes(path)
+
+        if (shouldBeAllowed) {
+          const bodyText = await page.locator('body').innerText()
+          expect(landed, `${role} 访问 /${path} 应正常打开，实际落到 ${landed}`).toBe(path)
+          expect(
+            /服务开小差|网络异常|加载失败/.test(bodyText),
+            `${role} 的 /${path} 出现错误态`,
+          ).toBe(false)
+        } else {
+          expect(landed, `${role} 访问 /${path} 应落 403，实际 ${landed}`).toBe('403')
+        }
+      }
+
+      await context.close()
     }
   })
 })
