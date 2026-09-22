@@ -4,15 +4,27 @@ import { useConfigStore } from '@/stores/config'
 import { useNoticeStore } from '@/stores/notice'
 import { useWindowStore } from '@/stores/window'
 import { routes, type AppRouteMeta } from './routes'
+import { canAccessRoute } from './access'
 import { APP_NAME, PERMISSIONS } from '@/utils/constants'
+import type { RoleCode } from '@/types'
 
-/** 各角色的工作台首页（PRD 功能 1：按角色进入对应工作台） */
-const HOME_BY_PERMISSION: { permission: string; path: string }[] = [
-  { permission: PERMISSIONS.DASHBOARD_VIEW, path: '/dashboard' },
-  { permission: PERMISSIONS.ORDER_FORM_SUBMIT, path: '/my-courses' },
-  { permission: PERMISSIONS.STUDENT_ORDER_SUBMIT, path: '/book-select' },
-  { permission: PERMISSIONS.ORDER_FORM_VIEW_COLLEGE, path: '/college-records' },
-  { permission: PERMISSIONS.SUPPLIER_ORDER_VIEW, path: '/purchase-list' },
+/**
+ * 各角色的工作台首页（PRD 功能 1：按角色进入对应工作台）。
+ *
+ * 顺序即优先级：多角色用户（如教师+秘书）取最靠前的那一个。
+ * `roles` 与路由 meta 的归属角色一致——超管虽持有 order:form:submit 等角色专属权限，
+ * 也不能因此被判定为教师工作台。
+ */
+const HOME_BY_PERMISSION: { permission: string; roles: RoleCode[]; path: string }[] = [
+  { permission: PERMISSIONS.DASHBOARD_VIEW, roles: ['ADMIN'], path: '/dashboard' },
+  { permission: PERMISSIONS.ORDER_FORM_SUBMIT, roles: ['TEACHER'], path: '/my-courses' },
+  { permission: PERMISSIONS.STUDENT_ORDER_SUBMIT, roles: ['STUDENT'], path: '/book-select' },
+  {
+    permission: PERMISSIONS.ORDER_FORM_VIEW_COLLEGE,
+    roles: ['SECRETARY'],
+    path: '/college-records',
+  },
+  { permission: PERMISSIONS.SUPPLIER_ORDER_VIEW, roles: ['SUPPLIER'], path: '/purchase-list' },
 ]
 
 /** 全部可见（非 hidden、非分组外）路由，用于兜底解析 */
@@ -27,15 +39,17 @@ function visibleRoutes(): { path: string; meta?: AppRouteMeta }[] {
  *
  * 这是「按角色进入对应工作台」的唯一真源：根路径 `/` 不再做静态 redirect
  * （静态 redirect 到 /dashboard 会让教师/学生被权限守卫拦到 /403）。
+ * 判定与守卫、菜单同源（`canAccessRoute`），含角色归属约束。
  */
-export function resolveLandingPath(permissions: string[]): string {
-  const preferred = HOME_BY_PERMISSION.find((item) => permissions.includes(item.permission))
+export function resolveLandingPath(permissions: string[], roles: RoleCode[]): string {
+  const preferred = HOME_BY_PERMISSION.find(
+    (item) => permissions.includes(item.permission) && item.roles.some((r) => roles.includes(r)),
+  )
   if (preferred) return preferred.path
 
-  const first = visibleRoutes().find((child) => {
-    const perm = child.meta?.permission
-    return !child.meta?.hidden && (!perm || permissions.includes(perm))
-  })
+  const first = visibleRoutes().find(
+    (child) => !child.meta?.hidden && canAccessRoute(child.meta, permissions, roles),
+  )
   return first ? `/${first.path}` : '/403'
 }
 
@@ -49,8 +63,8 @@ function resolveTitle(path: string): string {
  * 路由守卫（SPEC §4）：
  * 首屏先 bootstrap（用 refresh token 静默恢复会话）→ 未登录跳 /login；
  * 首登未改密 → 强制 /profile（业务接口一律 403 FIRST_LOGIN_REQUIRED，前置拦截更友好）；
- * 根路径 → 按权限解析落地页；
- * 权限码缺失 → /403。
+ * 根路径 → 按权限与角色解析落地页；
+ * 权限码缺失或角色不归属 → /403。
  */
 export function setupRouterGuards(router: Router) {
   router.beforeEach(async (to) => {
@@ -69,7 +83,9 @@ export function setupRouterGuards(router: Router) {
     }
 
     if (to.path === '/login') {
-      if (auth.isLoggedIn && !auth.mustChangePassword) return resolveLandingPath(auth.permissions)
+      if (auth.isLoggedIn && !auth.mustChangePassword) {
+        return resolveLandingPath(auth.permissions, auth.roles)
+      }
       return true
     }
 
@@ -82,13 +98,14 @@ export function setupRouterGuards(router: Router) {
       return { path: '/profile', query: { forceChange: '1' } }
     }
 
-    // 根路径 / 部署子路径：按权限码解析落地页（教师→我的课程，学生→选书，供货商→订购清单…）
+    // 根路径 / 部署子路径：按权限码与角色解析落地页（教师→我的课程，学生→选书…）
     if (to.path === '/') {
-      return resolveLandingPath(auth.permissions)
+      return resolveLandingPath(auth.permissions, auth.roles)
     }
 
-    const permission = (to.meta as unknown as AppRouteMeta | undefined)?.permission
-    if (permission && !auth.has(permission)) {
+    // 权限码 + 角色归属双重校验（与侧边栏菜单、落地页解析同源）
+    const meta = to.meta as unknown as AppRouteMeta | undefined
+    if (!canAccessRoute(meta, auth.permissions, auth.roles)) {
       return { path: '/403' }
     }
 

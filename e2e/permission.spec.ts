@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import {
   FORBIDDEN_MENU,
   MENU_BY_ROLE,
+  OVER_GRANTED_ADMIN_PERMISSIONS,
   ROLES,
   loginAs,
   mockApi,
@@ -10,7 +11,7 @@ import {
 
 /**
  * 权限矩阵（评审 A2 回归用例）：
- * 侧边栏按权限码过滤 + 按钮级权限（PermButton 无权限码移除 DOM）。
+ * 侧边栏按「权限码 + 角色归属」过滤 + 按钮级权限（PermButton 无权限码移除 DOM）。
  */
 const ALL_ROLES = Object.values(ROLES) as RoleCode[]
 
@@ -30,6 +31,54 @@ test.describe('侧边栏菜单按权限过滤', () => {
       }
     })
   }
+})
+
+/**
+ * 回归：2026-09-22 线上缺陷（超管菜单里冒出学院秘书/任课老师/学生三个分组）。
+ *
+ * 触发条件是「后端把角色专属权限也授给了超管」——当时 ADMIN = 除供货商外全部。
+ * 本组用例故意下发**授权过宽**的权限集，断言前端侧边栏仍然干净：
+ * 角色归属约束是继后端收权之后的第二道防线。
+ */
+test.describe('回归：超管授权过宽时菜单仍不得泄漏别角色分组', () => {
+  test('授权过宽的超管：菜单只有教材室管理台，且无别角色分组标题', async ({ page }) => {
+    await mockApi(page, ROLES.ADMIN, { permissions: OVER_GRANTED_ADMIN_PERMISSIONS })
+    await loginAs(page, ROLES.ADMIN)
+    const menu = page.locator('.app-menu')
+    await expect(menu).toBeVisible()
+
+    // 应当可见：教材室管理台全部 11 项
+    for (const title of MENU_BY_ROLE.ADMIN) {
+      await expect(menu.getByText(title, { exact: true })).toBeVisible()
+    }
+    // 不得可见：教师/学生/秘书自助页 + 供货商页
+    for (const title of FORBIDDEN_MENU.ADMIN) {
+      await expect(menu.getByText(title, { exact: true })).toHaveCount(0)
+    }
+    // 不得出现别角色的分组标题（缺陷的直接表征）
+    for (const groupTitle of ['学院秘书', '任课老师', '学生', '教材供货商']) {
+      await expect(menu.getByText(groupTitle, { exact: true })).toHaveCount(0)
+    }
+  })
+
+  test('授权过宽的超管：直接访问教师/学生页被守卫拦到 403', async ({ page }) => {
+    await mockApi(page, ROLES.ADMIN, { permissions: OVER_GRANTED_ADMIN_PERMISSIONS })
+    await loginAs(page, ROLES.ADMIN)
+    for (const path of ['./my-courses', './book-select', './window-status']) {
+      await page.goto(path)
+      await expect(page).toHaveURL(/\/403$/)
+    }
+  })
+
+  test('未授权过宽的超管（收权后）：菜单与分组同样干净', async ({ page }) => {
+    await mockApi(page, ROLES.ADMIN)
+    await loginAs(page, ROLES.ADMIN)
+    const menu = page.locator('.app-menu')
+    await expect(menu.getByText('数据看板', { exact: true })).toBeVisible()
+    for (const groupTitle of ['学院秘书', '任课老师', '学生']) {
+      await expect(menu.getByText(groupTitle, { exact: true })).toHaveCount(0)
+    }
+  })
 })
 
 test.describe('按钮级权限（PermButton 无权限移除 DOM）', () => {

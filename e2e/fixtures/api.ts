@@ -18,19 +18,25 @@ export const ROLES = {
 
 export type RoleCode = (typeof ROLES)[keyof typeof ROLES]
 
-/** 各角色的权限码（与后端 sys_permission 冻结值一致；取值见 src/utils/constants.ts） */
+/**
+ * 各角色的权限码（**必须与后端 `db/data-permission.sql` 逐条一致**）。
+ *
+ * 2026-09-22 教训：本清单曾比真实后端少 7 条（超管的教师/学生/秘书角色专属权限），
+ * 导致「超管只看到本角色菜单」用例在 CI 全绿、生产却渲染出 4 个角色分组。
+ * 改动后端授权时**必须同步改这里**，否则 E2E 会失去回归能力。
+ */
 export const PERMISSIONS_BY_ROLE: Record<RoleCode, string[]> = {
+  /** ADMIN = 37 条 − 供货商 2 条 − 7 条角色专属（自助类）权限 */
   ADMIN: [
-    'dashboard:stat:view',
+    'semester:semester:manage',
+    'semester:semester:activate',
+    'semester:window:manage',
+    'semester:window:view',
     'user:account:manage',
     'user:account:reset',
     'org:college:manage',
     'org:major:manage',
     'org:class:manage',
-    'semester:semester:manage',
-    'semester:semester:activate',
-    'semester:window:manage',
-    'semester:window:view',
     'textbook:book:manage',
     'textbook:book:import',
     'course:course:manage',
@@ -49,18 +55,42 @@ export const PERMISSIONS_BY_ROLE: Record<RoleCode, string[]> = {
     'notice:task:view',
     'config:config:manage',
     'audit:log:view',
+    'dashboard:stat:view',
   ],
   SECRETARY: [
     'semester:window:view',
     'order:form:view:college',
+    'export:order:create',
     'export:signature:create',
     'change:request:submit',
-    'order:form:view:self',
+    'import:batch:view',
   ],
-  TEACHER: ['semester:window:view', 'order:form:submit', 'order:form:view:self'],
+  TEACHER: [
+    'semester:window:view',
+    'order:form:submit',
+    'order:form:view:self',
+    'change:request:submit',
+  ],
   STUDENT: ['semester:window:view', 'student:order:submit', 'student:order:view:self'],
   SUPPLIER: ['supplier:order:view', 'supplier:order:export'],
 }
+
+/**
+ * 「授权过宽的超管」权限集（= 修复前的后端实际授权：37 条 − 供货商 2 条）。
+ *
+ * 用于回归用例：即使后端把教师填报、学生选购、秘书签字版导出等角色专属权限
+ * 授予超管，前端侧边栏也不得渲染别角色的菜单（角色归属约束是前端的第二道防线）。
+ */
+export const OVER_GRANTED_ADMIN_PERMISSIONS: string[] = [
+  ...PERMISSIONS_BY_ROLE.ADMIN,
+  'order:form:submit',
+  'order:form:view:self',
+  'order:form:view:college',
+  'student:order:submit',
+  'student:order:view:self',
+  'change:request:submit',
+  'export:signature:create',
+]
 
 /** 各角色登录后的预期落地页（router/guards.ts 的 resolveLandingPath） */
 export const LANDING_BY_ROLE: Record<RoleCode, string> = {
@@ -71,22 +101,75 @@ export const LANDING_BY_ROLE: Record<RoleCode, string> = {
   SUPPLIER: '/purchase-list',
 }
 
-/** 各角色侧边栏**应当**出现的菜单项标题 */
+/** 各角色侧边栏**应当**出现的菜单项标题（按路由表顺序） */
 export const MENU_BY_ROLE: Record<RoleCode, string[]> = {
-  ADMIN: ['数据看板', '账号管理', '组织管理', '教材库', '征订数据', '导出中心'],
-  SECRETARY: ['本院征订记录', '本院导出（签字版）', '窗口状态', '异动申请'],
-  TEACHER: ['我的课程', '填报教材', '我的提交记录'],
+  ADMIN: [
+    '数据看板',
+    '账号管理',
+    '组织管理',
+    '学期与窗口引擎',
+    '教材库',
+    '课程与任课管理',
+    '学生/教师管理',
+    '复核工作台',
+    '征订数据',
+    '导出中心',
+    '通知管理',
+  ],
+  // 导出中心对秘书可见是有意设计：后端 /api/admin/export/orders 支持「秘书本院」范围
+  SECRETARY: ['导出中心', '本院征订记录', '本院导出（签字版）', '窗口状态', '异动申请'],
+  // 异动申请为秘书与教师共链（PRD：知道真实变动的人提交，教材室只审批）
+  TEACHER: ['异动申请', '我的课程', '填报教材', '我的提交记录'],
   STUDENT: ['选书', '我的选购记录'],
   SUPPLIER: ['订购清单', '清单导出'],
 }
 
-/** 各角色**不应**出现的菜单项（越权可见性回归） */
+/**
+ * 各角色**不应**出现的菜单项（越权与「别角色菜单泄漏」双向回归）。
+ *
+ * 注意 ADMIN 这一项此前是空数组——正是它让 2026-09-22 的线上缺陷在 CI 里全绿。
+ * 空数组等于「不禁止任何多余项」，对超管这种权限最宽的角色必须显式列出禁区。
+ */
 export const FORBIDDEN_MENU: Record<RoleCode, string[]> = {
-  ADMIN: [],
-  SECRETARY: ['数据看板', '账号管理', '教材库'],
-  TEACHER: ['数据看板', '账号管理', '本院征订记录'],
-  STUDENT: ['数据看板', '我的课程', '订购清单'],
-  SUPPLIER: ['数据看板', '选书', '我的课程'],
+  ADMIN: [
+    // 教师自助页
+    '我的课程',
+    '填报教材',
+    '我的提交记录',
+    // 学生自助页
+    '选书',
+    '我的选购记录',
+    // 秘书页（含仅秘书可见的窗口状态页）
+    '本院征订记录',
+    '本院导出（签字版）',
+    '窗口状态',
+    '异动申请',
+    // 供货商（物理隔离）
+    '订购清单',
+    '清单导出',
+  ],
+  SECRETARY: [
+    '数据看板',
+    '账号管理',
+    '组织管理',
+    '教材库',
+    '我的课程',
+    '填报教材',
+    '选书',
+    '订购清单',
+  ],
+  TEACHER: [
+    '数据看板',
+    '账号管理',
+    '组织管理',
+    '教材库',
+    '本院征订记录',
+    '本院导出（签字版）',
+    '选书',
+    '订购清单',
+  ],
+  STUDENT: ['数据看板', '账号管理', '我的课程', '填报教材', '本院征订记录', '订购清单'],
+  SUPPLIER: ['数据看板', '账号管理', '选书', '我的课程', '本院征订记录'],
 }
 
 export const USER_NO_BY_ROLE: Record<RoleCode, string> = {
@@ -114,6 +197,11 @@ export interface MockOptions {
   windowStatus?: 'not_open' | 'open' | 'closed'
   /** 业务接口统一失败（验证错误态与重试入口） */
   failBusiness?: boolean
+  /**
+   * 覆盖 `/me` 下发的权限码（回归「后端授权过宽」场景：
+   * 超管拿到角色专属权限时，前端菜单仍不得渲染别角色分组）。
+   */
+  permissions?: string[]
 }
 
 interface Session {
@@ -210,7 +298,7 @@ export async function mockApi(page: Page, loginRole: RoleCode, options: MockOpti
           name: NAME_BY_ROLE[role],
           roles: [role],
           currentRole: role,
-          permissions: PERMISSIONS_BY_ROLE[role],
+          permissions: options.permissions ?? PERMISSIONS_BY_ROLE[role],
           mustChangePassword: options.mustChangePassword ? 1 : 0,
           firstLoginVerified: options.mustChangePassword ? 0 : 1,
         }),
@@ -219,7 +307,7 @@ export async function mockApi(page: Page, loginRole: RoleCode, options: MockOpti
 
     if (path === '/me/permissions') {
       const role = current?.role ?? loginRole
-      return json(200, ok(PERMISSIONS_BY_ROLE[role]))
+      return json(200, ok(options.permissions ?? PERMISSIONS_BY_ROLE[role]))
     }
 
     // ---- 未登录：业务接口一律 401（与真实后端一致） ----

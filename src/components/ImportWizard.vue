@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 
 import { useConfigStore } from '@/stores/config'
-import { useTaskStore } from '@/stores/task'
+import { useTaskStore, isTerminalTaskError } from '@/stores/task'
 import { triggerBrowserDownload } from '@/api/http'
 import { COPY } from '@/utils/constants'
 import type { ImportBatch } from '@/types'
@@ -39,6 +39,8 @@ const progress = computed(() => batch.value?.progressPct ?? 0)
 const errorRows = computed(() => batch.value?.errorDetail ?? [])
 /** 轮询失败：必须展示并提供重试，否则界面表现为进度条永久卡住（评审 Q6） */
 const pollError = computed(() => state.value?.error ?? '')
+/** 终态失败（批次不存在/不属于本人 → 404，A5）不给重试入口：重试必然再失败 */
+const canRetryPolling = computed(() => !isTerminalTaskError(state.value?.errorCode ?? ''))
 
 watch(
   () => batch.value?.status,
@@ -173,7 +175,10 @@ defineExpose({ reset, batchId })
         show-icon
         data-testid="import-poll-error"
       >
-        <el-button class="mt-8" size="small" @click="retryPolling">重试</el-button>
+        <el-button v-if="canRetryPolling" class="mt-8" size="small" @click="retryPolling">
+          重试
+        </el-button>
+        <span v-else class="text-muted">该批次已不可访问，请重新上传。</span>
       </el-alert>
       <el-alert
         v-else-if="batch"

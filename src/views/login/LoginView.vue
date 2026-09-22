@@ -41,7 +41,8 @@ async function submit() {
       await router.replace('/profile?forceChange=1')
       return
     }
-    const redirect = (route.query.redirect as string) || resolveLandingPath(auth.permissions)
+    const redirect =
+      (route.query.redirect as string) || resolveLandingPath(auth.permissions, auth.roles)
     await router.replace(redirect)
   } catch (error) {
     const message = (error as Error)?.message || COPY.FAILED

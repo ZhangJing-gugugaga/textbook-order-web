@@ -1,13 +1,15 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useTaskStore } from '@/stores/task'
-import { POLL_INTERVAL_MAX, POLL_INTERVAL_START } from '@/utils/constants'
+import { isTerminalTaskError, useTaskStore } from '@/stores/task'
+import { ApiError } from '@/api/http'
+import { CODE, POLL_INTERVAL_MAX, POLL_INTERVAL_START } from '@/utils/constants'
 import type { ExportTask, ImportBatch } from '@/types'
 
 /**
- * 异步任务 store（SPEC §7 / 评审 Q6）：
+ * 异步任务 store（SPEC §7 / 评审 Q6 / 交接文档 A5）：
  * 导入批次与导出任务轮询——2s 起步、×1.5 退避至 10s 上限、终态自动停止；
- * 轮询失败写入 `state.error` 并停止，消费方展示错误 + 重试（再次调用即重试）。
+ * 轮询失败写入 `state.error`/`errorCode` 并停止，消费方展示错误 + 重试（再次调用即重试）。
+ * 归属失败统一为 404（A5），属终态：消费方据此不提供重试入口。
  */
 
 /** 首次轮询后的退避间隔：2s × 1.5 = 3s */
@@ -134,6 +136,41 @@ describe('pollExport 导出任务轮询', () => {
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MAX * 6)
     expect(fetcher).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('终态失败判定（交接文档 A5）', () => {
+  it('归属失败 404 / 403 / 410 属终态：消费方不给重试入口', () => {
+    expect(isTerminalTaskError(CODE.NOT_FOUND)).toBe(true)
+    expect(isTerminalTaskError(CODE.FORBIDDEN)).toBe(true)
+    expect(isTerminalTaskError(CODE.RESOURCE_FORBIDDEN)).toBe(true)
+    expect(isTerminalTaskError('410')).toBe(true)
+  })
+
+  it('网络抖动等可重试错误不算终态', () => {
+    expect(isTerminalTaskError('NETWORK_ERROR')).toBe(false)
+    expect(isTerminalTaskError(CODE.SERVER_ERROR)).toBe(false)
+    expect(isTerminalTaskError('')).toBe(false)
+  })
+
+  it('轮询失败时记录 errorCode，重试时清空', async () => {
+    const store = useTaskStore()
+    const fetcher = vi
+      .fn<(id: number) => Promise<ExportTask>>()
+      .mockRejectedValueOnce(new ApiError('导出任务不存在', CODE.NOT_FOUND))
+      .mockResolvedValueOnce(exportTask({ status: 'done' }))
+
+    store.pollExport(11, fetcher)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.exports[11].errorCode).toBe(CODE.NOT_FOUND)
+    expect(isTerminalTaskError(store.exports[11].errorCode)).toBe(true)
+
+    store.pollExport(11, fetcher)
+    expect(store.exports[11].errorCode).toBe('')
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.exports[11].data?.status).toBe('done')
+    expect(store.exports[11].errorCode).toBe('')
   })
 })
 

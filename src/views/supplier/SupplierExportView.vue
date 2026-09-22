@@ -58,6 +58,8 @@ onMounted(load)
         name="供货商清单"
         :code="PERMISSIONS.SUPPLIER_ORDER_EXPORT"
         :exporter="() => supplierApi.export({})"
+        :progress="supplierApi.taskProgress"
+        :download="supplierApi.taskDownload"
       />
       <el-button @click="load">刷新清单</el-button>
     </div>

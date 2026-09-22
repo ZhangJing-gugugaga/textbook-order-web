@@ -15,6 +15,7 @@ import {
   COPY,
   PERMISSIONS,
   ROLE_LABELS,
+  ROLES,
   statusMetaOf,
 } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
@@ -40,7 +41,7 @@ const semesterId = ref<number | null>(null)
 /** 筛选条件 → 接口参数（空串不下发），分页由 ServerTable 注入 */
 function fetchPeoplePage({ page, size }: { page: number; size: number }) {
   return accountsApi.page({
-    roleCode: personType.value === 'student' ? 'STUDENT' : 'TEACHER',
+    roleCode: personType.value === 'student' ? ROLES.STUDENT : ROLES.TEACHER,
     keyword: peopleFilters.keyword || undefined,
     page,
     size,

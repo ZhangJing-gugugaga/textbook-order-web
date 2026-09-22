@@ -197,6 +197,16 @@ async function submit() {
     ) {
       fieldIssues.value = error.data as FieldCheckIssue[]
       ElMessage.error((error as Error).message || '存在未通过的字段审查，请按提示修复后重新提交')
+    } else if (
+      error instanceof ApiError &&
+      (error.code === CODE.STATE_CONFLICT ||
+        error.code === CODE.WINDOW_CLOSED ||
+        error.code === CODE.CORRECTION_EXPIRED)
+    ) {
+      // 本页状态已过期（如管理员刚通过/驳回、窗口刚截止）：重拉最新状态再让用户决定，
+      // 不自动重试——重试只会再次被同一个状态机拒绝
+      ElMessage.warning((error as Error).message || '表单状态已变更，已为你刷新')
+      await load()
     } else {
       ElMessage.error((error as Error)?.message || COPY.FAILED)
     }
@@ -253,8 +263,11 @@ onMounted(() => {
       type="success"
       :closable="false"
       show-icon
-      :title="`已复核通过${form?.reviewBy ? `（审核人 #${form.reviewBy}）` : ''}`"
-    />
+      :title="`已复核通过${form?.reviewBy ? `（审核人 #${form.reviewBy}）` : ''}，本单已定稿，不能再修改或重提`"
+    >
+      已通过审核的表单是终态：后端会拒绝再次提交（409）。如内容确需调整，
+      请联系教材室按线下流程处理。
+    </el-alert>
 
     <FieldCheckResult
       v-if="fieldIssues.length"

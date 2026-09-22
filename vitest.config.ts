@@ -70,21 +70,21 @@ export default defineConfig({
       ],
       exclude: ['src/types/**', 'src/env.d.ts'],
       /**
-       * 门禁锁定实测基线（2026-09-21：statements 47.4% / branches 44.4% / functions 43.1% / lines 47.9%），
+       * 门禁锁定实测基线（2026-09-22：statements 50.5% / branches 46.4% / functions 45.3% / lines 51.4%），
        * 各留约 2 个百分点余量。门槛的作用是**防回归**：新增未测逻辑会把比例拉下来并让 CI 变红。
+       * （上一版基线 45/42/41/45，本次补齐 A1–A7 契约适配的单测后上调，**只许上调不得下调**。）
        *
        * 数字偏低的已知原因（不是「门禁形同虚设」，是当前覆盖面的事实）：
        * - 26 个页面视图不在此范围（由 Playwright E2E 覆盖，见 `npm run test:e2e`）；
        * - `router/routes.ts` 是纯路由表、`router/index.ts` 是装配代码，无逻辑可断言；
        * - `ExportButton` / `RoleSwitcher` / `WindowBanner` / `ForceChangePasswordModal` /
        *   `useCountdown` 尚无单测（其行为由 E2E 覆盖），属待补项（见 SPEC §10 待办）。
-       * 每次补测后应**上调**本阈值，不得下调。
        */
       thresholds: {
-        statements: 45,
-        branches: 42,
-        functions: 41,
-        lines: 45,
+        statements: 48,
+        branches: 44,
+        functions: 43,
+        lines: 49,
       },
     },
   },

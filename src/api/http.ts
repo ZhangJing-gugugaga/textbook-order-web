@@ -27,13 +27,25 @@ export class ApiError extends Error {
   code: string
   data: unknown
   config: AxiosRequestConfig | undefined
+  /**
+   * 服务端回带的 `X-Request-Id`（后端每个响应都有；请求时自带该头会被沿用）。
+   * 用于把「用户看到的那次失败」与后端日志对上——报障时带上它，比「我这边报错了」高效得多。
+   */
+  requestId?: string
 
-  constructor(message: string, code: string, data?: unknown, config?: AxiosRequestConfig) {
+  constructor(
+    message: string,
+    code: string,
+    data?: unknown,
+    config?: AxiosRequestConfig,
+    requestId?: string,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.code = code
     this.data = data
     this.config = config
+    this.requestId = requestId
   }
 }
 
@@ -74,6 +86,8 @@ export function configureHttp(next: Partial<HttpHooks>) {
 interface InternalConfig extends AxiosRequestConfig {
   _isRefresh?: boolean
   _retried?: boolean
+  /** 本次请求自带的 X-Request-Id（响应未回带时作为兜底，见 requestIdOf 调用处） */
+  _requestId?: string
 }
 
 /* ---------------- 设备标识（refresh 轮换的会话标识，SPEC §5） ---------------- */
@@ -98,13 +112,24 @@ export const httpInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-/* ---------------- 请求拦截：注入 Bearer + X-Device-Id ---------------- */
+/* ---------------- 请求拦截：注入 Bearer + X-Device-Id + X-Request-Id ---------------- */
+/**
+ * 生成请求关联 id（后端会沿用请求自带的 `X-Request-Id` 并回带）。
+ * 自己先发一个的好处：即使请求根本没拿到响应（网络中断），前端也有一个 id 可用于报障。
+ */
+function newRequestId(): string {
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 httpInstance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = hooks.getAccessToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
   config.headers['X-Device-Id'] = deviceId()
+  const requestId = newRequestId()
+  ;(config as InternalConfig)._requestId = requestId
+  config.headers['X-Request-Id'] = requestId
   return config
 })
 
@@ -141,13 +166,24 @@ function startRefresh(adapter?: unknown): Promise<string> {
 }
 
 /* ---------------- 错误分流 ---------------- */
+/**
+ * 从响应头取 X-Request-Id；响应未回带时回退到本次请求自带的那个
+ * （网络中断场景没有响应头，但前端仍需一个 id 可报障）。
+ */
+function requestIdOf(headers: unknown, config?: InternalConfig): string | undefined {
+  const value = (headers as Record<string, unknown> | undefined)?.['x-request-id']
+  if (typeof value === 'string' && value) return value
+  return config?._requestId
+}
+
 function rejectWith(
   message: string,
   code: string,
   data: unknown,
   config: AxiosRequestConfig | undefined,
+  requestId?: string,
 ): Promise<never> {
-  return Promise.reject(new ApiError(message, code, data, config))
+  return Promise.reject(new ApiError(message, code, data, config, requestId))
 }
 
 /** 401 三类语义分流；返回是否已处理为强制登出 */
@@ -182,20 +218,23 @@ httpInstance.interceptors.response.use(
       const envelope = body as ApiEnvelope
       const config = response.config as InternalConfig
       if (envelope.code === CODE.OK) return envelope.data
+      const requestId = requestIdOf(response.headers, config)
+      const fail = (message: string, code: string, data: unknown) =>
+        rejectWith(message, code, data, config, requestId)
       const code = envelope.code
       const message = envelope.message || ''
       if (code === CODE.FORBIDDEN || code === CODE.RESOURCE_FORBIDDEN) {
         hooks.onForbidden()
-        return rejectWith(message || COPY.FORBIDDEN, code, envelope.data, config)
+        return fail(message || COPY.FORBIDDEN, code, envelope.data)
       }
       if (code === CODE.FIRST_LOGIN_REQUIRED) {
         hooks.onFirstLoginRequired()
-        return rejectWith(message || COPY.FIRST_LOGIN_REQUIRED, code, envelope.data, config)
+        return fail(message || COPY.FIRST_LOGIN_REQUIRED, code, envelope.data)
       }
       if (code === CODE.REFRESH_INVALID || code === CODE.ACCOUNT_DISABLED) {
-        return rejectWith(handle401(code, message), code, envelope.data, config)
+        return fail(handle401(code, message), code, envelope.data)
       }
-      return rejectWith(message || COPY.FAILED, code, envelope.data, config)
+      return fail(message || COPY.FAILED, code, envelope.data)
     }
     // 文件流等非包络响应（同步导出 xlsx、模板下载）
     return body
@@ -204,12 +243,15 @@ httpInstance.interceptors.response.use(
     const response = error.response
     const config = (error.config || {}) as InternalConfig
 
-    // 网络失败（无响应）
+    // 网络失败（无响应）：没有响应头，仍带上本次请求自带的 id 以便报障
     if (!response) {
-      return rejectWith(COPY.NETWORK, 'NETWORK_ERROR', undefined, config)
+      return rejectWith(COPY.NETWORK, 'NETWORK_ERROR', undefined, config, config._requestId)
     }
 
     const status = response.status
+    const requestId = requestIdOf(response.headers, config)
+    const fail = (message: string, code: string, data: unknown) =>
+      rejectWith(message, code, data, config, requestId)
     // responseType:'blob' 的错误体需先反解成 JSON 才能拿到业务码
     const envelope =
       response.data && typeof response.data === 'object' && !('code' in response.data)
@@ -223,17 +265,17 @@ httpInstance.interceptors.response.use(
     if (status === 401) {
       if (config._isRefresh) {
         hooks.onForceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, detail, config)
+        return fail(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, detail)
       }
       // 未持有 access token 的 401 = 「未登录」而非「会话过期」：
       // 公共页（登录页）的并发请求不应触发刷新与强制登出提示
       if (!hooks.getAccessToken()) {
-        return rejectWith(message || COPY.LOGIN_EXPIRED, code ?? CODE.UNAUTHORIZED, detail, config)
+        return fail(message || COPY.LOGIN_EXPIRED, code ?? CODE.UNAUTHORIZED, detail)
       }
       // 已重放仍 401 → 不再刷新
       if (config._retried) {
         hooks.onForceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, CODE.TOKEN_EXPIRED, detail, config)
+        return fail(COPY.LOGIN_EXPIRED, CODE.TOKEN_EXPIRED, detail)
       }
       // 明确非「access 过期」的语义：直接返回业务文案，不触发 refresh
       if (
@@ -241,17 +283,17 @@ httpInstance.interceptors.response.use(
         code === CODE.ACCOUNT_LOCKED ||
         code === CODE.FIRST_LOGIN_VERIFY_FAILED
       ) {
-        return rejectWith(message || COPY.BAD_CREDENTIAL, code, detail, config)
+        return fail(message || COPY.BAD_CREDENTIAL, code, detail)
       }
       if (code === CODE.REFRESH_INVALID || code === CODE.ACCOUNT_DISABLED) {
-        return rejectWith(handle401(code, message), code, detail, config)
+        return fail(handle401(code, message), code, detail)
       }
       // access 过期（TOKEN_EXPIRED / UNAUTHORIZED / 未细分）→ single-flight refresh 后重放
       try {
         await startRefresh(config.adapter)
       } catch {
         hooks.onForceLogout(COPY.LOGIN_EXPIRED)
-        return rejectWith(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, detail, config)
+        return fail(COPY.LOGIN_EXPIRED, CODE.REFRESH_INVALID, detail)
       }
       return httpInstance.request({
         ...(config as AxiosRequestConfig),
@@ -265,15 +307,28 @@ httpInstance.interceptors.response.use(
       } else {
         hooks.onForbidden()
       }
-      return rejectWith(message || COPY.FORBIDDEN, code ?? CODE.FORBIDDEN, detail, config)
+      return fail(message || COPY.FORBIDDEN, code ?? CODE.FORBIDDEN, detail)
     }
 
     if (status >= 500) {
-      return rejectWith(COPY.SERVER_ERROR, code ?? CODE.SERVER_ERROR, detail, config)
+      return fail(COPY.SERVER_ERROR, code ?? CODE.SERVER_ERROR, detail)
+    }
+
+    // 405 / 415：协议边界（方法/内容类型不匹配）。后端已细分为独立码，前端按码给文案，
+    // 不要因为「非 4xx 业务码」就统一说成服务故障。
+    if (code === CODE.METHOD_NOT_ALLOWED) {
+      return fail(message || COPY.METHOD_NOT_ALLOWED, code, detail)
+    }
+    if (code === CODE.MEDIA_TYPE_NOT_SUPPORTED) {
+      return fail(message || COPY.MEDIA_TYPE_NOT_SUPPORTED, code, detail)
+    }
+    // 410：一次性下载 token 已被消费/过期/文件已清理——重试同一 token 必然再失败
+    if (code === CODE.DOWNLOAD_TOKEN_INVALID) {
+      return fail(message || COPY.DOWNLOAD_TOKEN_INVALID, code, detail)
     }
 
     // 400 / 404 / 409 / 410 / 429：保留后端业务码、文案与逐字段明细（前端按码分流）
-    return rejectWith(message || COPY.FAILED, code ?? String(status), detail, config)
+    return fail(message || COPY.FAILED, code ?? String(status), detail)
   },
 )
 

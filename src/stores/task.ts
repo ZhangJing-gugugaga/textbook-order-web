@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { ApiError } from '@/api/http'
 import { POLL_INTERVAL_MAX, POLL_INTERVAL_START } from '@/utils/constants'
 import type { ExportTask, ImportBatch } from '@/types'
 
@@ -8,6 +9,20 @@ type TaskState<T> = {
   timer: number
   interval: number
   error: string
+  /** 失败业务码：供消费方判断「重试是否有意义」（见 isTerminalTaskError） */
+  errorCode: string
+}
+
+/**
+ * 轮询失败是否属于**终态**（重试必然再失败，不应给重试入口）。
+ *
+ * 归属校验失败统一为 404（A5）：任务不存在、或不属于当前用户——两种情况都不会因为
+ * 「再点一次」而变成可访问。同理 403 与 410（一次性 token 已消费）。
+ */
+export function isTerminalTaskError(code: string): boolean {
+  return (
+    code === 'NOT_FOUND' || code === 'FORBIDDEN' || code === 'RESOURCE_FORBIDDEN' || code === '410'
+  )
 }
 
 /**
@@ -29,6 +44,7 @@ export const useTaskStore = defineStore('task', {
           timer: 0,
           interval: POLL_INTERVAL_START,
           error: '',
+          errorCode: '',
         }
       }
       return this.imports[batchId]
@@ -41,13 +57,14 @@ export const useTaskStore = defineStore('task', {
           timer: 0,
           interval: POLL_INTERVAL_START,
           error: '',
+          errorCode: '',
         }
       }
       return this.exports[taskId]
     },
     /**
      * 轮询导入批次；终态（done/failed）自动停止。
-     * 轮询失败会写入 `state.error` 并停止——消费方必须展示该字段并提供重试入口
+     * 轮询失败会写入 `state.error`/`errorCode` 并停止——消费方必须展示并提供重试入口
      * （评审 Q6：此前失败后界面表现为进度条永久卡住且无重试入口）；
      * 再次调用本方法即为重试（会清空 error 并从初始间隔重新开始）。
      */
@@ -56,12 +73,14 @@ export const useTaskStore = defineStore('task', {
       if (state.polling) return
       state.polling = true
       state.error = ''
+      state.errorCode = ''
       state.interval = POLL_INTERVAL_START
       const tick = async () => {
         try {
           const batch = await fetcher(batchId)
           state.data = batch
           state.error = ''
+          state.errorCode = ''
           if (batch.status === 'running') {
             state.interval = Math.min(state.interval * 1.5, POLL_INTERVAL_MAX)
             state.timer = setTimeout(tick, state.interval) as unknown as number
@@ -70,6 +89,7 @@ export const useTaskStore = defineStore('task', {
           }
         } catch (error) {
           state.error = (error as Error)?.message || '轮询失败'
+          state.errorCode = error instanceof ApiError ? error.code : ''
           state.polling = false
         }
       }
@@ -77,19 +97,21 @@ export const useTaskStore = defineStore('task', {
     },
     /**
      * 轮询导出任务；终态（done/failed/expired）自动停止。
-     * 同 `pollImport`：失败写入 `state.error`，再次调用即为重试（评审 Q6）。
+     * 同 `pollImport`：失败写入 `state.error`/`errorCode`，再次调用即为重试（评审 Q6）。
      */
     pollExport(taskId: number, fetcher: (id: number) => Promise<ExportTask>) {
       const state = this.ensureExport(taskId)
       if (state.polling) return
       state.polling = true
       state.error = ''
+      state.errorCode = ''
       state.interval = POLL_INTERVAL_START
       const tick = async () => {
         try {
           const task = await fetcher(taskId)
           state.data = task
           state.error = ''
+          state.errorCode = ''
           if (task.status === 'queued' || task.status === 'running') {
             state.interval = Math.min(state.interval * 1.5, POLL_INTERVAL_MAX)
             state.timer = setTimeout(tick, state.interval) as unknown as number
@@ -98,6 +120,7 @@ export const useTaskStore = defineStore('task', {
           }
         } catch (error) {
           state.error = (error as Error)?.message || '轮询失败'
+          state.errorCode = error instanceof ApiError ? error.code : ''
           state.polling = false
         }
       }

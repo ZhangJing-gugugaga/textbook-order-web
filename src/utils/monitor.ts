@@ -26,6 +26,11 @@ export interface ErrorReport {
   stack?: string
   /** 发生时的路由路径（不含 query，避免把 token 之类的参数带出去） */
   path: string
+  /**
+   * 服务端 `X-Request-Id`（仅接口错误有）。
+   * 带上它就能把这条前端报错直接对到后端那次请求的日志上。
+   */
+  requestId?: string
   app: string
   /** 应用版本（构建时注入，见 vite.config.ts define） */
   version: string
@@ -43,7 +48,17 @@ const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev
 
 /** 默认上报器：仅输出到控制台，便于本地与试运行期排查 */
 const consoleReporter: ErrorReporter = (report) => {
-  console.error(`[${APP_NAME}][${report.source}]`, report.message, report.stack ?? '')
+  const tag = report.requestId ? ` [request-id=${report.requestId}]` : ''
+  console.error(`[${APP_NAME}][${report.source}]${tag}`, report.message, report.stack ?? '')
+}
+
+/**
+ * 结构化取 `requestId`：不 import ApiError，保持本模块零依赖
+ * （接入上报端点时也不必把接口层拖进来）。
+ */
+function requestIdOf(error: unknown): string | undefined {
+  const value = (error as { requestId?: unknown } | null | undefined)?.requestId
+  return typeof value === 'string' && value ? value : undefined
 }
 
 let reporter: ErrorReporter = consoleReporter
@@ -73,6 +88,7 @@ export function reportError(
     message: extra?.message ?? err?.message ?? String(error ?? '未知错误'),
     stack: extra?.stack ?? err?.stack,
     path: currentPath(),
+    requestId: requestIdOf(error),
     app: APP_NAME,
     version: APP_VERSION,
     userAgent: typeof navigator === 'undefined' ? '' : navigator.userAgent,

@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import type { AuthResult, RoleCode, UserInfo } from '@/types'
 import { authApi, meApi } from '@/api/auth'
+import { ApiError } from '@/api/http'
+import { CODE, COPY } from '@/utils/constants'
 import { readRefreshToken, writeRefreshToken } from '@/utils/session'
 
 /**
@@ -72,8 +74,17 @@ export const useAuthStore = defineStore('auth', {
       this.permissions = await meApi.permissions()
       return this.permissions
     },
-    /** 切换身份：返回新令牌与角色，随后重拉权限（数据范围不变） */
+    /**
+     * 切换身份：返回新令牌与角色，随后重拉权限（数据范围不变）。
+     *
+     * 首登待完成时**必须拒绝**：后端放行清单是显式枚举，`POST /api/auth/switch-role`
+     * 不在其中（它会重发 access/refresh，等于让未完成首登的会话拿到新的长效令牌），
+     * 调用只会拿到 403 FIRST_LOGIN_REQUIRED。前置拦截比等一个必然失败的请求更清晰。
+     */
     async switchRole(roleCode: RoleCode) {
+      if (this.mustVerifyFirstLogin) {
+        throw new ApiError(COPY.FIRST_LOGIN_REQUIRED, CODE.FIRST_LOGIN_REQUIRED)
+      }
       const result = await authApi.switchRole(roleCode)
       this.applyTokens(result)
       await this.loadProfile()

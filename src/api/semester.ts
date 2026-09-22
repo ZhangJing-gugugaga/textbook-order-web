@@ -1,14 +1,31 @@
 import { http } from './http'
+import { toWireDateTime } from '@/utils/format'
 import type { AuditLog, College, Klass, Major, PageResult, Semester, WindowState } from '@/types'
 
-/** 学期与窗口引擎（API.md §3.2 · 12 端点） */
+/**
+ * 学期与窗口引擎（API.md §3.2 · 12 端点）。
+ *
+ * **时间入参格式（实测 2026-09-22，与 API.md §1.1 的表述有出入）**：JSON body 里的
+ * `LocalDateTime` 只认 ISO-8601（`yyyy-MM-ddTHH:mm:ss`），传空格格式会 400 PARAM_INVALID。
+ * el-date-picker 的值是空格格式，因此在接口层统一用 `toWireDateTime` 转换
+ * （query 参数则相反，要求空格格式——详见 `utils/format.ts` 的格式不对称说明）。
+ */
 export const semesterApi = {
   /** 学期列表（draft/active/archived） */
   list: () => http.get<Semester[]>('/admin/semester'),
   detail: (id: number) => http.get<Semester>(`/admin/semester/${id}`),
-  create: (data: Partial<Semester>) => http.post<Semester>('/admin/semester', data),
+  create: (data: Partial<Semester>) =>
+    http.post<Semester>('/admin/semester', {
+      ...data,
+      windowStart: toWireDateTime(data.windowStart),
+      windowEnd: toWireDateTime(data.windowEnd),
+    }),
   update: (id: number, data: Partial<Semester>) =>
-    http.put<Semester>(`/admin/semester/${id}`, data),
+    http.put<Semester>(`/admin/semester/${id}`, {
+      ...data,
+      windowStart: toWireDateTime(data.windowStart),
+      windowEnd: toWireDateTime(data.windowEnd),
+    }),
   /** 双缓冲原子切换：body 带 version 乐观锁（不匹配 → 409 STATE_CONFLICT） */
   activate: (id: number, version: number) =>
     http.post<Semester>(`/admin/semester/${id}/activate`, { version }),
@@ -17,12 +34,19 @@ export const semesterApi = {
   setWindow: (
     id: number,
     data: { windowStart: string; windowEnd: string; autoOpen?: number; autoClose?: number },
-  ) => http.put<Semester>(`/admin/semester/${id}/window`, data),
+  ) =>
+    http.put<Semester>(`/admin/semester/${id}/window`, {
+      ...data,
+      windowStart: toWireDateTime(data.windowStart),
+      windowEnd: toWireDateTime(data.windowEnd),
+    }),
   openWindow: (id: number) => http.post<Semester>(`/admin/semester/${id}/window/open`),
   closeWindow: (id: number) => http.post<Semester>(`/admin/semester/${id}/window/close`),
   /** 延长（无限次；延长至早于当前时间 → 400） */
   extendWindow: (id: number, windowEnd: string) =>
-    http.post<Semester>(`/admin/semester/${id}/window/extend`, { windowEnd }),
+    http.post<Semester>(`/admin/semester/${id}/window/extend`, {
+      windowEnd: toWireDateTime(windowEnd),
+    }),
   /** 变更记录（来自审计） */
   changes: (id: number, params?: { page?: number; size?: number }) =>
     http.get<PageResult<AuditLog>>(`/admin/semester/${id}/window/changes`, { params }),

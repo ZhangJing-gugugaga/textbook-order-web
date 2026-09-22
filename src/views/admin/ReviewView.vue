@@ -3,12 +3,13 @@ import { reactive, ref } from 'vue'
 
 import { reviewApi } from '@/api/orderForm'
 import { exportApi } from '@/api/exportTask'
+import { ApiError } from '@/api/http'
 import FieldCheckResult from '@/components/FieldCheckResult.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import OrderFormItemsTable from '@/components/OrderFormItemsTable.vue'
 import PermButton from '@/components/PermButton.vue'
 import ServerTable from '@/components/ServerTable.vue'
-import { COPY, ORDER_FORM_STATUS_META, PERMISSIONS, statusMetaOf } from '@/utils/constants'
+import { CODE, COPY, ORDER_FORM_STATUS_META, PERMISSIONS, statusMetaOf } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
 import { asRow } from '@/utils/table'
 import type { OrderForm, OrderFormListItem } from '@/types'
@@ -18,6 +19,10 @@ import type { OrderForm, OrderFormListItem } from '@/types'
  * 待审列表（GET /api/admin/order-forms）+ 系统字段审查结果（只读）+ 明细预览 +
  * 通过/驳回（reject 理由必填 1-200 字，仅 pending_review 可审）。
  * 本页不提供修改表单内容的编辑能力——复核不改数据，驳回由教师补正。
+ *
+ * 审核走 **contentVersion CAS**：详情读到的版本号原样回传，服务端比对不一致即 409
+ * STATE_CONFLICT（教师在此期间重提过）。此时**重新拉详情**并让管理员重新确认，
+ * 绝不自动重试——自动重试等于替他确认了没看过的内容。
  *
  * 列表分页与三态由 ServerTable 基座承担（SPEC §8）；状态文案统一取
  * ORDER_FORM_STATUS_META（原先本页自带的 STATUS_META 已删，避免文案漂移）。
@@ -72,26 +77,64 @@ async function openDetail(row: OrderFormListItem) {
   }
 }
 
-async function approve() {
+/** 审核冲突（409 STATE_CONFLICT）：内容已被教师重提，重拉详情让管理员重新确认，不自动重试 */
+async function refetchAfterConflict() {
   if (!detail.value) return
   try {
-    await ElMessageBox.confirm('确认复核通过该表单？通过后计入汇总并进入学生清单。', '复核通过', {
-      type: 'warning',
-    })
-  } catch {
-    return
+    detail.value = await reviewApi.detail(detail.value.id)
+    ElMessage.warning('表单内容已变更，已刷新为最新版本，请重新确认后再操作')
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
+    detailVisible.value = false
+  }
+}
+
+/**
+ * 提交审核（带内容版本 CAS）。
+ * @returns 是否成功——失败（含 409 冲突）时调用方不应关闭弹窗或刷新列表
+ */
+async function runReview(payload: {
+  action: 'pass' | 'reject'
+  reason?: string
+}): Promise<boolean> {
+  const form = detail.value
+  if (!form) return false
+  // 版本号缺失时无法保证 CAS：宁可不提交，也不让审批落在未确认的内容上
+  if (form.contentVersion == null) {
+    ElMessage.error('未取到表单内容版本号，请关闭后重新打开详情再操作')
+    return false
   }
   processing.value = true
   try {
-    await reviewApi.review(detail.value.id, { action: 'pass' })
-    ElMessage.success('已复核通过')
-    detailVisible.value = false
-    tableRef.value?.reload(false)
+    await reviewApi.review(form.id, { ...payload, contentVersion: form.contentVersion })
+    return true
   } catch (error) {
+    if (error instanceof ApiError && error.code === CODE.STATE_CONFLICT) {
+      await refetchAfterConflict()
+      return false
+    }
     ElMessage.error((error as Error)?.message || COPY.FAILED)
+    return false
   } finally {
     processing.value = false
   }
+}
+
+async function approve() {
+  if (!detail.value) return
+  try {
+    await ElMessageBox.confirm(
+      '确认复核通过该表单？通过后计入汇总并进入学生清单，且不可再修改。',
+      '复核通过',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  if (!(await runReview({ action: 'pass' }))) return
+  ElMessage.success('已复核通过')
+  detailVisible.value = false
+  tableRef.value?.reload(false)
 }
 
 async function submitReject() {
@@ -104,19 +147,11 @@ async function submitReject() {
     ElMessage.error('驳回理由不超过 200 字')
     return
   }
-  if (!detail.value) return
-  processing.value = true
-  try {
-    await reviewApi.review(detail.value.id, { action: 'reject', reason })
-    ElMessage.success('已驳回，教师可补正后重新提交')
-    rejectVisible.value = false
-    detailVisible.value = false
-    tableRef.value?.reload(false)
-  } catch (error) {
-    ElMessage.error((error as Error)?.message || COPY.FAILED)
-  } finally {
-    processing.value = false
-  }
+  if (!(await runReview({ action: 'reject', reason }))) return
+  ElMessage.success('已驳回，教师可补正后重新提交')
+  rejectVisible.value = false
+  detailVisible.value = false
+  tableRef.value?.reload(false)
 }
 </script>
 
@@ -202,6 +237,9 @@ async function submitReject() {
             </el-descriptions-item>
             <el-descriptions-item label="审核人">
               {{ detail.reviewBy ? `#${detail.reviewBy}` : '—' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="内容版本">
+              {{ detail.contentVersion ?? '—' }}
             </el-descriptions-item>
           </el-descriptions>
 

@@ -53,6 +53,12 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals.node } },
   },
   {
+    // 联调/契约测试脚本是 Node CLI：需要 node 全局与 stdout 输出
+    files: ['scripts/**/*.mjs', 'scripts/**/*.js'],
+    languageOptions: { globals: { ...globals.node } },
+    rules: { 'no-console': 'off' },
+  },
+  {
     rules: {
       'vue/multi-word-component-names': 'off',
       'vue/attributes-order': 'off',

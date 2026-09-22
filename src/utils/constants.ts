@@ -41,6 +41,11 @@ export const COPY = {
   ACCOUNT_LOCKED: '账号已锁定，请稍后再试',
   BAD_CREDENTIAL: '账号或密码不正确',
   FIRST_LOGIN_REQUIRED: '请先完成首登校验并修改初始密码',
+  /** 405 / 415：前端发起方式有误（不是服务端故障），文案不得复用 SERVER_ERROR */
+  METHOD_NOT_ALLOWED: '请求方法不被支持，请刷新页面后重试',
+  MEDIA_TYPE_NOT_SUPPORTED: '请求内容类型不被支持',
+  /** 410：一次性下载 token 已被消费或过期，只能重新导出（原地重试必然再失败） */
+  DOWNLOAD_TOKEN_INVALID: '下载链接已失效，请重新导出',
 } as const
 
 /* ---------------- 业务错误码（后端 common/error/ErrorCode 同源） ---------------- */
@@ -73,6 +78,9 @@ export const CODE = {
   FIRST_LOGIN_REQUIRED: 'FIRST_LOGIN_REQUIRED',
   /* 404 */
   NOT_FOUND: 'NOT_FOUND',
+  /* 405 / 415：协议边界（此前被后端兜底成 500 SERVER_ERROR，前端不得再显示「服务开小差」） */
+  METHOD_NOT_ALLOWED: 'METHOD_NOT_ALLOWED',
+  MEDIA_TYPE_NOT_SUPPORTED: 'MEDIA_TYPE_NOT_SUPPORTED',
   /* 409 */
   WINDOW_CLOSED: 'WINDOW_CLOSED',
   WINDOW_NOT_OPEN: 'WINDOW_NOT_OPEN',

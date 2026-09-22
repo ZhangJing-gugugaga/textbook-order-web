@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import type { FormInstance } from 'element-plus'
 import { semesterApi } from '@/api/semester'
 import PermButton from '@/components/PermButton.vue'
 import { DATETIME_FORMAT, PERMISSIONS } from '@/utils/constants'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, toPickerDateTime } from '@/utils/format'
 import { validateExtendEnd, validateForm, validateWindowRange } from '@/utils/validate'
 import type { AuditLog, Semester } from '@/types'
 
@@ -13,6 +13,10 @@ import type { AuditLog, Semester } from '@/types'
  * draft→active 激活二次确认（body 带 version 乐观锁，冲突回退提示）、归档；
  * 窗口设置/立即开启/提前截止/无限次延长，每次二次确认并提示将自动通知全员；
  * 变更记录来自审计（GET /admin/semester/{id}/window/changes）。
+ *
+ * 时间格式：接口下发的是 ISO-8601（可能带微秒），而 el-date-picker 的
+ * `value-format` 是 `yyyy-MM-dd HH:mm:ss`——回填与提交都要转换
+ * （`toPickerDateTime` 回填 / 接口层的 `toWireDateTime` 提交）。
  */
 const props = defineProps<{ semester: Semester }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -20,14 +24,23 @@ const emit = defineEmits<{ (e: 'changed'): void }>()
 const saving = ref(false)
 const changes = ref<AuditLog[]>([])
 
-/** 后端时间格式统一 yyyy-MM-dd HH:mm:ss（spring.mvc.format.date-time） */
-
 const form = reactive({
-  windowStart: props.semester.windowStart,
-  windowEnd: props.semester.windowEnd,
+  windowStart: toPickerDateTime(props.semester.windowStart),
+  windowEnd: toPickerDateTime(props.semester.windowEnd),
   autoOpen: props.semester.autoOpen,
   autoClose: props.semester.autoClose,
 })
+
+// 切换学期（props 变化）时同步回填，否则会残留上一个学期的时间
+watch(
+  () => props.semester.id,
+  () => {
+    form.windowStart = toPickerDateTime(props.semester.windowStart)
+    form.windowEnd = toPickerDateTime(props.semester.windowEnd)
+    form.autoOpen = props.semester.autoOpen
+    form.autoClose = props.semester.autoClose
+  },
+)
 
 const formRef = ref<FormInstance>()
 const rules = {

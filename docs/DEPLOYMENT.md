@@ -80,9 +80,12 @@ npm run build:school     # 或 build:trial；等价于 vue-tsc --noEmit && vite 
 **校验产物**（建议每次发布都做）：
 
 ```bash
-# 1) 入口脚本路径应是子路径，不是 /assets/
+# 1) 入口脚本路径必须与部署路径一致（子域名根目录 → /assets/；子路径 → /textbook/assets/）
 grep -o 'src="[^"]*"' dist/index.html
-# 期望：src="/textbook/assets/index-<hash>.js"
+# 期望：src="<部署路径>assets/index-<hash>.js"
+#   子域名部署（如 textbooksorder.moonzj.com）→ src="/assets/index-<hash>.js"
+#   主域子路径部署                            → src="/textbook/assets/index-<hash>.js"
+# 与 `.env.<mode>` 的 VITE_BASE 不一致时，页面会白屏并报 404 加载 .js（见 §5 排查表）
 
 # 2) 不应有超过 500KB 的 chunk（构建会直接告警）
 ls -l dist/assets/*.js | sort -k5 -n | tail -3
@@ -314,6 +317,20 @@ rsync -avz --delete /var/www/textbook-order-web.bak-<时间戳>/ /var/www/textbo
 低于上述版本不保证可用（产物不包含 ES5 降级与 polyfill）。
 若校方机房存在 IE11 或国产双核浏览器的兼容内核，**必须在移交前提出**——这需要额外引入
 `@vitejs/plugin-legacy` 并重新评估包体积（预计入口体积增加 30%~50%），属变更项而非配置项。
+
+### 移动端浏览器：**不在支持范围内（明确非目标）**
+
+Web 端面向桌面浏览器：全仓无响应式断点（0 个 `@media`），侧边栏固定 232px，
+表格按 `min-width` 撑开。手机浏览器**可以打开、不会崩溃**（viewport 正确、表格可横向滚动），
+但布局不可用。
+
+移动端业务由**独立小程序仓库 `textbook-order-mp`** 承载（任课老师填报 + 学生选购），
+因此 Web 端不做响应式是**有意的范围划分，不是缺陷**。
+
+若校方提出「用手机浏览器走 Web 端」的需求，属**新增需求**：需要补响应式布局与触摸优化，
+工作量约 1~2 人周（含 5 角色页面走查），不能靠改配置解决。
+
+**移交话术建议**：向校方明确「PC 端用 Web，手机端用小程序」，避免被当作故障报修。
 
 ---
 

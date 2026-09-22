@@ -10,6 +10,7 @@ import {
   NOTICE_SOURCE_LABELS,
   PERMISSIONS,
   ROLE_LABELS,
+  ROLES,
   SEND_STATUS,
 } from '@/utils/constants'
 import { asRow } from '@/utils/table'
@@ -87,7 +88,7 @@ async function closeTask(task: NoticeTask) {
 /* ---------------- 手动创建 ---------------- */
 const creating = ref(false)
 const createFormRef = ref<FormInstance>()
-const createForm = reactive({ title: '', content: '', targetRoles: 'STUDENT' })
+const createForm = reactive({ title: '', content: '', targetRoles: ROLES.STUDENT })
 const createRules = {
   title: [{ required: true, message: '请输入通知标题', trigger: 'blur' }],
   content: [{ required: true, message: '请输入通知内容', trigger: 'blur' }],
@@ -106,7 +107,7 @@ async function submitCreate() {
     activeTab.value = 'tasks'
     createForm.title = ''
     createForm.content = ''
-    createForm.targetRoles = 'STUDENT'
+    createForm.targetRoles = ROLES.STUDENT
     await load()
   } catch (error) {
     ElMessage.error((error as Error)?.message || COPY.FAILED)

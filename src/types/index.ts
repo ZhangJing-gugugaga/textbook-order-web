@@ -314,6 +314,12 @@ export interface OrderForm {
   reviewNote?: string
   /** 补正截止时间（被驳回后下发） */
   correctDeadline?: string
+  /**
+   * 内容版本号（每次提交整单覆盖即自增）。
+   * 审核接口以它做 CAS：审核页把读到的值原样回传，服务端比对不一致即 409，
+   * 防止「管理员打开页面 → 教师又重提 → 管理员点通过」落在没看过的内容上。
+   */
+  contentVersion?: number
   items: OrderFormItem[]
   itemCount: number
   totalQuantity: number
@@ -432,6 +438,22 @@ export interface UnconfirmedNotice {
   source: string
   createdAt?: string
   roundStopped: boolean
+}
+
+/**
+ * MyNoticeItem（GET /api/notice/mine · 全量通知，含已确认与已关闭）。
+ * 与 /unconfirmed 同口径：按 `notice_task.target_roles` 定向，只返回面向本人角色的任务
+ * （ADMIN 全量可见）。空列表 = 没有面向本角色的通知，是正常状态而非故障。
+ */
+export interface MyNotice {
+  taskId: number
+  title: string
+  content: string
+  source: string
+  status: string
+  createdAt?: string
+  /** 为 null / 缺省表示待确认 */
+  confirmedAt?: string | null
 }
 
 /** NoticeTaskListItem */

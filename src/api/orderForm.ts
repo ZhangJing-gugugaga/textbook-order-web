@@ -46,9 +46,18 @@ export const reviewApi = {
   /** 秘书：本院表单分页（只读） */
   collegePage: (query: { status?: string; teacherName?: string; page?: number; size?: number }) =>
     http.get<PageResult<OrderFormListItem>>('/secretary/order-forms', { params: query }),
-  /** 详情（含 fieldCheckResult 与明细） */
+  /** 详情（含 fieldCheckResult、contentVersion 与明细） */
   detail: (id: number) => http.get<OrderForm>(`/admin/order-forms/${id}`),
-  /** 内容审核：pass / reject（reject 理由必填 1-200 字；仅 pending_review 可审，否则 409） */
-  review: (id: number, data: { action: 'pass' | 'reject'; reason?: string }) =>
-    http.post<OrderForm>(`/admin/order-forms/${id}/review`, data),
+  /**
+   * 内容审核：pass / reject（reject 理由必填 1-200 字；仅 pending_review 可审，否则 409）。
+   *
+   * `contentVersion` **必传**：取详情接口读到的值原样回传，服务端以它做 CAS。
+   * 审核页打开后教师若又重提过（状态仍是 pending_review，但明细已被整单覆盖），
+   * 版本不一致即 409 STATE_CONFLICT——调用方应重新拉详情让管理员确认，**不要自动重试**
+   * （自动重试等于替他确认了没看过的内容）。不传时服务端只能拦住请求处理窗口内的并发提交。
+   */
+  review: (
+    id: number,
+    data: { action: 'pass' | 'reject'; reason?: string; contentVersion: number },
+  ) => http.post<OrderForm>(`/admin/order-forms/${id}/review`, data),
 }

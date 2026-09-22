@@ -39,7 +39,7 @@ async function confirm() {
     // 清理序列：清 store → 跳转首页并重拉菜单与数据
     notice.reset()
     windowStore.stopPolling()
-    await router.replace(resolveLandingPath(auth.permissions))
+    await router.replace(resolveLandingPath(auth.permissions, auth.roles))
     visible.value = false
     ElMessage.success('已切换身份')
   } catch (error) {

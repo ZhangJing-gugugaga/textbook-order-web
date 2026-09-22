@@ -85,7 +85,7 @@ async function submit() {
     visible.value = false
     emit('done')
     if (props.force) {
-      await router.replace(resolveLandingPath(auth.permissions))
+      await router.replace(resolveLandingPath(auth.permissions, auth.roles))
     }
   } catch (error) {
     // 校验态失效（如换设备/过期）→ 退回校验步骤

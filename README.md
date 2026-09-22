@@ -36,20 +36,27 @@ dev/preview 由 Vite proxy 转发，试运行/移交由 Nginx 反代。
 
 ## 环境与部署
 
-| 环境     | 模式          | VITE_BASE    | VITE_PROXY_TARGET       | 说明                                    |
-| -------- | ------------- | ------------ | ----------------------- | --------------------------------------- |
-| 本地开发 | `development` | `/`          | `http://127.0.0.1:8080` | `npm run dev`，`/api` 代理到本机后端    |
-| 试运行   | `trial`       | `/textbook/` | 后端地址                | moonzj.com 子路径，`/api` 由 Nginx 反代 |
-| 移交学校 | `school`      | `/textbook/` | 后端地址                | 仅改 env 与 Nginx 配置                  |
-| 生产构建 | `production`  | `/textbook/` | —（构建期不参与）       | `npm run build`                         |
+| 环境     | 模式          | VITE_BASE    | VITE_PROXY_TARGET       | 说明                                                          |
+| -------- | ------------- | ------------ | ----------------------- | ------------------------------------------------------------- |
+| 本地开发 | `development` | `/`          | `http://127.0.0.1:8080` | `npm run dev`，`/api` 代理到本机后端                          |
+| 试运行   | `trial`       | `/`          | 后端地址                | 独立子域名根目录，`/api` 由 Nginx 反代                        |
+| 移交学校 | `school`      | 按校方路径   | 后端地址                | 仅改 env 与 Nginx 配置（子域名用 `/`，子路径用 `/textbook/`） |
+| 生产构建 | `production`  | `/textbook/` | —（构建期不参与）       | `npm run build`（默认子路径，子域名部署请用 `build:trial`）   |
 
 - 代码零域名/IP 硬编码：API 一律相对路径 `/api`，base 走 `VITE_BASE`。
+- **`VITE_BASE` 必须与部署路径一致**，否则静态资源 404：
+  - 独立子域名（当前线上 `textbooksorder.moonzj.com`）→ `VITE_BASE=/`；
+  - 主域子路径（如 `moonzj.com/textbook/`）→ `VITE_BASE=/textbook/`。
+  - 构建后自检：`grep -o 'src="[^"]*"' dist/index.html`，路径前缀应与部署路径相同。
 - **本地开发无需任何 env 文件**：`npm run dev` 默认 `base=/` + 代理到 `127.0.0.1:8080`
   （`vite.config.ts` 按模式取默认值，显式配置优先）。
 - trial / school 的差异见 `.env.trial` / `.env.school`（无密钥）；样例见 `.env.example`。
 - **Nginx 完整配置（含安全响应头与缓存分层）、回滚流程与故障排查见 `docs/DEPLOYMENT.md`。**
 - 浏览器兼容矩阵：Chrome ≥ 87 / Edge ≥ 88 / Firefox ≥ 78 / Safari ≥ 14
   （`package.json` browserslist 与 `build.target` 同源声明）。
+- **移动端浏览器不在支持范围内**（明确非目标，非缺陷）：全仓无响应式断点，侧边栏固定 232px，
+  手机浏览器可打开但布局不可用。移动端业务由独立小程序仓库 `textbook-order-mp` 承载
+  （任课老师填报 + 学生选购）。Web 端面向桌面浏览器（矩阵如上）。
 
 ## 联调测试账号
 

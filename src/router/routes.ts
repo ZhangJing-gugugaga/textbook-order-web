@@ -1,4 +1,5 @@
 import type { RouteRecordRaw } from 'vue-router'
+import type { RoleCode } from '@/types'
 
 /** 路由元信息：权限码取后端 sys_permission（M1 冻结 37 条） */
 export interface AppRouteMeta {
@@ -6,6 +7,19 @@ export interface AppRouteMeta {
   title: string
   icon?: string
   permission?: string
+  /**
+   * 页面归属角色（自助类页面的归属约束）。
+   *
+   * 为什么需要它：超管在后端拿到「除供货商外全部」权限，其中含教师填报、学生选购、
+   * 秘书签字版导出等**角色专属**权限（权限名本身即写明归属，如「教师填报提交」）。
+   * 只按权限码过滤菜单，超管侧边栏就会冒出「学院秘书 / 任课老师 / 学生」三个别角色的
+   * 分组，且点进去都是对超管无意义的自助页（我的课程为空、选书无班级可归）。
+   *
+   * 规则：声明了 `roles` 的页面，访问需**同时**满足「持有权限码」与「持有该角色」；
+   * 未声明的属管理台页面（导出中心由后端支持「秘书本院 / 教材室全院」两种范围，
+   * 是有意共享），保持仅按权限码过滤。
+   */
+  roles?: RoleCode[]
   /** 菜单分组（无权限的分组整体不渲染） */
   group?: string
   /** 不进侧边栏菜单 */
@@ -174,6 +188,7 @@ export const routes: RouteRecordRaw[] = [
           title: '本院征订记录',
           icon: 'Document',
           permission: 'order:form:view:college',
+          roles: ['SECRETARY'],
           group: '学院秘书',
         },
       },
@@ -185,6 +200,7 @@ export const routes: RouteRecordRaw[] = [
           title: '本院导出（签字版）',
           icon: 'Download',
           permission: 'export:signature:create',
+          roles: ['SECRETARY'],
           group: '学院秘书',
         },
       },
@@ -196,6 +212,7 @@ export const routes: RouteRecordRaw[] = [
           title: '窗口状态',
           icon: 'Calendar',
           permission: 'semester:window:view',
+          roles: ['SECRETARY'],
           group: '学院秘书',
         },
       },
@@ -207,6 +224,8 @@ export const routes: RouteRecordRaw[] = [
           title: '异动申请',
           icon: 'Switch',
           permission: 'change:request:submit',
+          // 异动由「知道真实变动的人」提交（PRD：秘书与任课教师同链），教材室只做审批
+          roles: ['SECRETARY', 'TEACHER'],
           group: '学院秘书',
         },
       },
@@ -219,6 +238,7 @@ export const routes: RouteRecordRaw[] = [
           title: '我的课程',
           icon: 'Reading',
           permission: 'order:form:view:self',
+          roles: ['TEACHER'],
           group: '任课老师',
         },
       },
@@ -230,6 +250,7 @@ export const routes: RouteRecordRaw[] = [
           title: '填报教材',
           icon: 'EditPen',
           permission: 'order:form:submit',
+          roles: ['TEACHER'],
           group: '任课老师',
         },
       },
@@ -241,6 +262,7 @@ export const routes: RouteRecordRaw[] = [
           title: '我的提交记录',
           icon: 'List',
           permission: 'order:form:view:self',
+          roles: ['TEACHER'],
           group: '任课老师',
         },
       },
@@ -253,6 +275,7 @@ export const routes: RouteRecordRaw[] = [
           title: '选书',
           icon: 'ShoppingCart',
           permission: 'student:order:submit',
+          roles: ['STUDENT'],
           group: '学生',
         },
       },
@@ -264,6 +287,7 @@ export const routes: RouteRecordRaw[] = [
           title: '我的选购记录',
           icon: 'List',
           permission: 'student:order:view:self',
+          roles: ['STUDENT'],
           group: '学生',
         },
       },
@@ -276,6 +300,7 @@ export const routes: RouteRecordRaw[] = [
           title: '订购清单',
           icon: 'Files',
           permission: 'supplier:order:view',
+          roles: ['SUPPLIER'],
           group: '教材供货商',
         },
       },
@@ -287,6 +312,7 @@ export const routes: RouteRecordRaw[] = [
           title: '清单导出',
           icon: 'Download',
           permission: 'supplier:order:export',
+          roles: ['SUPPLIER'],
           group: '教材供货商',
         },
       },

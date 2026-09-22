@@ -10,6 +10,10 @@ test-results
 src/types/auto-imports.d.ts
 src/types/components.d.ts
 
+# 由 npm run test:api（scripts/api-contract-test.mjs）生成的逐接口报告：
+# 每次联调都会被重写，不参与格式门禁（否则跑完联调 CI 立刻变红）
+docs/API-INTEGRATION-REPORT.md
+
 # 包管理器锁文件与二进制资产
 package-lock.json
 *.xlsx
