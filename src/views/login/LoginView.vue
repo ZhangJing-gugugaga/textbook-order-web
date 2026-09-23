@@ -96,7 +96,9 @@ async function submit() {
       </el-form>
 
       <div class="login-tip">
-        <p>账号由教材室统一分发，不可自主注册；初始密码为学号/工号后 6 位。</p>
+        <p>
+          账号由教材室统一分发，不可自主注册；初始密码默认为学号/工号后 6 位，具体以教材室通知为准。
+        </p>
         <p class="text-muted">连续输错 5 次账号将锁定 15 分钟。</p>
       </div>
     </div>
