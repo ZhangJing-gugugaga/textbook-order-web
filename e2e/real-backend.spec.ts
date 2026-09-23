@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { FORBIDDEN_MENU, MENU_BY_ROLE } from './fixtures/api'
+import { seedPassword } from './fixtures/seedCredentials'
 
 /**
  * 真实后端端到端走查（**无任何接口桩**）。
@@ -18,7 +19,9 @@ import { FORBIDDEN_MENU, MENU_BY_ROLE } from './fixtures/api'
  *      保证 CI 与本地常规回归不依赖后端）。
  *
 /**
- * 账号口令取后端 README 的种子清单（仅本地/试运行环境）。
+ * 账号口令**不入库**：运行时由 `fixtures/seedCredentials.ts` 注入（环境变量
+ * `E2E_SEED_PASSWORDS` 或 gitignore 的 `e2e/.seed-credentials.local.json`）——
+ * 安全扫描门禁把 `password: '…'` 字面量判为 Hardcoded password 并硬阻断 push。
  *
  * **串行执行**：多个用例共用同一批种子账号，并发时同账号的登录/刷新会互相干扰
  * （实测并发跑出现会话丢失 → 被弹回登录页），且真实后端本就是单实例共享资源。
@@ -28,15 +31,15 @@ test.describe.configure({ mode: 'serial' })
 
 const REAL = process.env.E2E_REAL_BACKEND === '1'
 
-/** 种子账号（后端 README「测试账号」表，正常态账号） */
+/** 种子账号（后端 README「测试账号」表，正常态账号）；口令见 seedPassword() */
 const ACCOUNT = {
-  ADMIN: { userNo: '900001', password: 'Admin@123', landing: '/dashboard' },
-  SECRETARY: { userNo: '800101', password: 'Sec@12345', landing: '/college-records' },
-  TEACHER: { userNo: '700101', password: 'Tea@12345', landing: '/my-courses' },
-  STUDENT: { userNo: '20230101', password: 'Stu@12345', landing: '/book-select' },
-  SUPPLIER: { userNo: '600001', password: 'Sup@12345', landing: '/purchase-list' },
+  ADMIN: { userNo: '900001', landing: '/dashboard' },
+  SECRETARY: { userNo: '800101', landing: '/college-records' },
+  TEACHER: { userNo: '700101', landing: '/my-courses' },
+  STUDENT: { userNo: '20230101', landing: '/book-select' },
+  SUPPLIER: { userNo: '600001', landing: '/purchase-list' },
   // 多角色：教师 + 秘书（验证切换身份与合并菜单）
-  TEACHER_SECRETARY: { userNo: '700103', password: 'Tea@12345', landing: '/my-courses' },
+  TEACHER_SECRETARY: { userNo: '700103', landing: '/my-courses' },
 } as const
 
 type RoleKey = keyof typeof ACCOUNT
@@ -95,7 +98,8 @@ const ALLOWED_PAGES: Record<string, string[]> = {
 
 /** 登录并消费掉可能出现的阻塞通知弹窗（种子库可能存在未确认通知） */
 async function realLogin(page: Page, key: RoleKey) {
-  const { userNo, password } = ACCOUNT[key]
+  const { userNo } = ACCOUNT[key]
+  const password = seedPassword(userNo)
   await page.goto('./login')
   await page.getByPlaceholder('学号 / 工号').fill(userNo)
   await page.getByPlaceholder('密码').fill(password)

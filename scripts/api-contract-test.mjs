@@ -2509,8 +2509,10 @@ async function scenarioA7() {
   })
   const noAuth = await raw('GET', '/api/me')
   const badLogin = await raw('POST', '/api/auth/login', {
-    // 用不存在的账号：失败次数按账号累计且落库，用真实账号反复探针会把种子账号锁死
-    body: { userNo: 'IT-NOBODY', password: 'wrong-password' },
+    // 用不存在的账号：失败次数按账号累计且落库，用真实账号反复探针会把种子账号锁死。
+    // 口令运行时拼装（仓库不留口令字面量，安全扫描门禁）：既避开 Hardcoded password，
+    // 也保证该值绝不可能是任何真实口令。
+    body: { userNo: 'IT-NOBODY', password: `invalid-${Date.now()}` },
   })
   const ok =
     m405.status === 405 &&

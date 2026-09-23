@@ -21,6 +21,9 @@ blob-report/
 id_rsa
 id_ed25519
 
+# 真实后端 E2E 的种子账号口令（仓库不落明文，见 e2e/fixtures/seedCredentials.ts）
+e2e/.seed-credentials.local.json
+
 # 编辑器与系统
 .DS_Store
 .idea/
