@@ -370,8 +370,7 @@ export interface OrderForm {
   totalQuantity: number
 }
 
-/** OrderFormListItem（列表/历史） */
-export interface OrderFormListItem {
+/** OrderFormListItem（列表/历史） */ export interface OrderFormListItem {
   id: number
   semesterId: number
   semesterName?: string
@@ -618,4 +617,31 @@ export interface SystemConfigItem {
   configKey: string
   configValue: string
   remark?: string
+}
+
+/* ---------------- 角色与权限（BE-2 / 决策 FE-W2） ---------------- */
+
+/** RoleListItem（GET /api/admin/role） */
+export interface RoleListItem {
+  id: number
+  roleCode: string
+  roleName: string
+  sort?: number
+  /** 内置角色（ADMIN/SECRETARY/TEACHER/STUDENT/SUPPLIER）：编码不可改，超管权限不可改 */
+  builtIn: boolean
+  /** 该角色下的账号数：删除时后端以它做 409 兜底 */
+  userCount: number
+  /** 已分配的权限码 */
+  permCodes: string[]
+}
+
+/** 权限目录（GET /api/admin/permission）：按模块分组，供权限树两级展示 */
+export interface PermissionItem {
+  permCode: string
+  permName: string
+}
+
+export interface PermissionGroup {
+  module: string
+  perms: PermissionItem[]
 }

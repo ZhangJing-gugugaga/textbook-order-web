@@ -29,6 +29,14 @@ export const accountsApi = {
   /** 重置为初始密码 + 强制改密 */
   resetPassword: (id: number) => http.put<void>(`/admin/user/${id}/reset-password`),
   /**
+   * 调整账号角色（BE-2 / 决策 FE-W2）：`PUT /api/admin/user/{id}/roles`。
+   *
+   * 全量覆盖式；调整后该账号被**强制下线**，需重新登录才生效（后端以角色变更事件踢线）。
+   * 前端在提交前二次确认，并禁止把自己改成不含 ADMIN（后端也有 400 兜底）。
+   */
+  updateRoles: (id: number, roleCodes: string[]) =>
+    http.put<void>(`/admin/user/${id}/roles`, { roleCodes }),
+  /**
    * 名单导入（?role=student|teacher&semesterId=）。
    *
    * `confirmClassSizeShrink`（局部名单门禁，B13）：学生名单会按文件内人数重算班级人数

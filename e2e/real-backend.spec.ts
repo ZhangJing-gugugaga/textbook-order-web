@@ -59,6 +59,7 @@ const ALL_PAGES = [
   'export-center',
   'notices',
   'audit',
+  'roles',
   'college-records',
   'college-export',
   'window-status',
@@ -91,6 +92,7 @@ const ALLOWED_PAGES: Record<string, string[]> = {
     'export-center',
     'notices',
     'audit',
+    'roles',
   ],
   SECRETARY: ['profile', 'college-records', 'college-export', 'window-status', 'change-requests'],
   TEACHER: ['profile', 'change-requests', 'my-courses', 'order-form', 'my-submissions'],
@@ -309,7 +311,34 @@ test.describe('真实后端走查：五角色落地页与菜单（无桩）', ()
   })
 
   /**
-   * 全角色 × 全页面矩阵（24 页面 × 5 角色）。
+   * FE-W2 角色管理页（只读部分）：渲染真实角色表，且内置角色受保护。
+   *
+   * 完整的「建角色→配权限→加挂账号→删除」链路是**写操作**，会往共享种子库写数据，
+   * 未纳入本只读走查；该链路的载荷正确性由 `tests/components/RoleView.spec.ts` 覆盖，
+   * 并在交付说明中给出一次真实后端的实测记录。
+   */
+  test('FE-W2：角色管理页渲染真实角色表，内置角色受保护', async ({ page }) => {
+    await realLogin(page, 'ADMIN')
+    await page.goto('./roles')
+    await expect(page).toHaveURL(/\/roles$/)
+
+    // 种子库有 5 个内置角色（ADMIN/SECRETARY/TEACHER/STUDENT/SUPPLIER）
+    await expect(page.locator('.el-table__row').first()).toBeVisible({ timeout: 15_000 })
+    expect(await page.locator('.el-table__row').count()).toBeGreaterThanOrEqual(5)
+
+    const body = await page.locator('body').innerText()
+    expect(body).toContain('教材室')
+    expect(body).toContain('内置')
+
+    // ADMIN 行的「配置权限」不可点（超管权限由系统内置）
+    const adminRow = page.locator('.el-table__row', { hasText: 'ADMIN' }).first()
+    await expect(adminRow.getByRole('button', { name: '配置权限' })).toBeDisabled()
+    // 内置角色不可删除
+    await expect(adminRow.getByRole('button', { name: '删除' })).toBeDisabled()
+  })
+
+  /**
+   * 全角色 × 全页面矩阵（25 页面 × 5 角色）。
    *
    * 断言每个页面在「有权角色」下正常渲染（不出现错误态），在「无权角色」下落 403。
    * 2026-09-22 用同款矩阵发现过一处「菜单能点、进去被拦」的缺陷（秘书进导出中心
@@ -318,7 +347,7 @@ test.describe('真实后端走查：五角色落地页与菜单（无桩）', ()
    * 期望矩阵显式列出（不靠菜单反推）：`profile` 全员可用，其余按角色归属。
    */
   test('全角色 × 全页面矩阵：有权页面正常渲染、无权页面落 403', async ({ browser }) => {
-    // 120 次页面加载（24 页 × 5 角色），远超默认 30s 用例超时
+    // 125 次页面加载（25 页 × 5 角色），远超默认 30s 用例超时
     test.setTimeout(600_000)
     const baseURL = test.info().project.use.baseURL as string
 

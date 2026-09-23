@@ -195,6 +195,17 @@ export const routes: RouteRecordRaw[] = [
           group: '教材室',
         },
       },
+      {
+        path: 'roles',
+        name: 'roles',
+        component: () => import('@/views/admin/RoleView.vue'),
+        meta: {
+          title: '角色管理',
+          icon: 'Lock',
+          permission: 'role:manage',
+          group: '教材室',
+        },
+      },
       /* ---------------- 学院秘书 ---------------- */
       {
         path: 'college-records',

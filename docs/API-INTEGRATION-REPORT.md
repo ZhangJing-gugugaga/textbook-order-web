@@ -1,36 +1,36 @@
 # 全接口联调测试报告（95 端点 · 真实 HTTP + 真实 MySQL）
 
-> 执行时间：2026-09-23 05:46:10 ｜ 目标：`http://127.0.0.1:8080` ｜ HTTP 调用：410 次
+> 执行时间：2026-09-23 06:16:24 ｜ 目标：`http://127.0.0.1:8080` ｜ HTTP 调用：410 次
 > 结论：**通过（无失败项）** —— 端点 95 个全部跑通（探针 268 PASS / 0 FAIL / 0 SKIP）；契约场景 12/12 通过
 
 ## 一、契约语义场景（A1–A7 + 补充）
 
 | 编号 | 场景 | 结论 | 观测 |
 | --- | --- | --- | --- |
-| A1 | contentVersion CAS：教师重提后旧版本审核被 409 拦下 | ✅ 通过 | 详情下发 contentVersion=true; 重提 64→65; 旧版本审核 HTTP 409/STATE_CONFLICT; 最新版本驳回 HTTP 200 |
+| A1 | contentVersion CAS：教师重提后旧版本审核被 409 拦下 | ✅ 通过 | 详情下发 contentVersion=true; 重提 68→69; 旧版本审核 HTTP 409/STATE_CONFLICT; 最新版本驳回 HTTP 200 |
 | A2 | 首登待完成：switch-role 与业务接口一律 403 FIRST_LOGIN_REQUIRED | ✅ 通过 | mustChangePassword=true; switch-role → HTTP 403 FIRST_LOGIN_REQUIRED; /api/me → 200; 业务接口 → 403 FIRST_LOGIN_REQUIRED |
 | A3 | 通知按 target_roles 定向：非定向角色队列为空（正常态），跨角色 confirm → 404 | ✅ 通过 | unconfirmed 条数 TEACHER=1 STUDENT=0 SUPPLIER=0 ADMIN=1（ADMIN 全量）; /notice/mine 分页形状=true; 跨角色 confirm → HTTP 404 NOT_FOUND |
 | A4 | reviewed 为终态：教师重提 409、管理员亦不能驳回（终态不可回退） | ✅ 通过 | 重提 → HTTP 409 STATE_CONFLICT「该征订单已通过审核，为终态不可修改（系统不提供撤销审核）；如确需变更请联系教材室线下处理」; 对该 reviewed 表单审核 → HTTP 409 STATE_CONFLICT |
 | A5 | 归属失败统一 404；权限缺失仍 403（两者语义不同） | ✅ 通过 | export-task/999999 → 404; supplier/export-task/1 → 404; batch/1（非本人，有权限）→ 404; batch/999999 → 404; batch/1（无权限）→ 403 |
 | pass 路径 | 审核通过（pending_review → reviewed） | ✅ 通过 | SKIP：IT9004 的征订单已是 reviewed（终态不可重置），本次跳过——首次执行时已覆盖；其已通过的大表单仍供导出/供货商导出用例使用 |
-| A6 | 导出分流 + 一次性 token：同步回 xlsx 流；异步 token 单次有效，复用 410 | ✅ 通过 | 同步导出 Content-Type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet（xlsx 流）; 制造 111 行明细（HTTP 200）; 异步受理 async=true taskId=32 rowEstimate=123; 轮询 status=done token=有; 首次下载 200; 复用 410/DOWNLOAD_TOKEN_INVALID; 缺 token 参数 400 |
+| A6 | 导出分流 + 一次性 token：同步回 xlsx 流；异步 token 单次有效，复用 410 | ✅ 通过 | 同步导出 Content-Type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet（xlsx 流）; 制造 111 行明细（HTTP 200）; 异步受理 async=true taskId=34 rowEstimate=123; 轮询 status=done token=有; 首次下载 200; 复用 410/DOWNLOAD_TOKEN_INVALID; 缺 token 参数 400 |
 | A7 | 协议边界：405 带 Allow 头、415、401 三类语义 | ✅ 通过 | 405 → 405/METHOD_NOT_ALLOWED Allow=POST; 415 → 415/MEDIA_TYPE_NOT_SUPPORTED; 无 token → 401; 错误口令 → 401/LOGIN_FAILED |
-| B | X-Request-Id：响应回带，且请求自带会被沿用（前后端日志可串联） | ✅ 通过 | 响应回带=d796ce0aa7514226; 自带 id 被沿用=it-probe-fixed-id-001 |
+| B | X-Request-Id：响应回带，且请求自带会被沿用（前后端日志可串联） | ✅ 通过 | 响应回带=e8814c8c2d5545d3; 自带 id 被沿用=it-probe-fixed-id-001 |
 | 分页 | 分页参数归一化：size 超上限被夹到 200，size<=0 退回 20（不报错） | ✅ 通过 | size=100000 → 实际 200; size=0 → 实际 20 |
 | 字段审查 | FIELD_CHECK_FAILED 逐项回显 {field,rule,message}（契约冻结格式） | ✅ 通过 | HTTP 400/FIELD_CHECK_FAILED，issues=1 项，形状合规=true |
-| A6-supplier | 供货商异步导出：一次性 token 语义与端点隔离现状 | ✅ 通过 | 受理 taskId=33（async 字段=true）; 轮询 status=done; 下载 200; 复用 410; 经内部端点读任务 404; 经内部端点下载 404 |
+| A6-supplier | 供货商异步导出：一次性 token 语义与端点隔离现状 | ✅ 通过 | 受理 taskId=35（async 字段=true）; 轮询 status=done; 下载 200; 复用 410; 经内部端点读任务 404; 经内部端点下载 404 |
 
 ### 场景证据明细
 
 **A1 · contentVersion CAS：教师重提后旧版本审核被 409 拦下** —— ✅ 通过
 
-- 结论依据：详情下发 contentVersion=true; 重提 64→65; 旧版本审核 HTTP 409/STATE_CONFLICT; 最新版本驳回 HTTP 200
-- POST /api/teacher/order-form/submit（首次）→ HTTP 200，表单 #3，状态=pending_review，contentVersion=64
-- GET /api/admin/order-forms/3 → contentVersion=64（管理员"看到的版本"）
-- POST /api/teacher/order-form/submit（重提，quantity 1→2）→ HTTP 200 0「」，状态=pending_review，contentVersion=65
-- GET /api/admin/order-forms/3 → contentVersion=65（重提后）
-- POST review {contentVersion:64, action:pass} → HTTP 409 STATE_CONFLICT「表单内容已变更或状态已更新，请刷新后重试」← 过期版本必须被拦
-- POST review {contentVersion:65, action:reject} → HTTP 200 0（成功时 message 键省略）
+- 结论依据：详情下发 contentVersion=true; 重提 68→69; 旧版本审核 HTTP 409/STATE_CONFLICT; 最新版本驳回 HTTP 200
+- POST /api/teacher/order-form/submit（首次）→ HTTP 200，表单 #3，状态=pending_review，contentVersion=68
+- GET /api/admin/order-forms/3 → contentVersion=68（管理员"看到的版本"）
+- POST /api/teacher/order-form/submit（重提，quantity 1→2）→ HTTP 200 0「」，状态=pending_review，contentVersion=69
+- GET /api/admin/order-forms/3 → contentVersion=69（重提后）
+- POST review {contentVersion:68, action:pass} → HTTP 409 STATE_CONFLICT「表单内容已变更或状态已更新，请刷新后重试」← 过期版本必须被拦
+- POST review {contentVersion:69, action:reject} → HTTP 200 0（成功时 message 键省略）
 
 **A2 · 首登待完成：switch-role 与业务接口一律 403 FIRST_LOGIN_REQUIRED** —— ✅ 通过
 
@@ -45,8 +45,8 @@
 - GET /api/notice/unconfirmed（TEACHER）→ 1 条
 - GET /api/notice/unconfirmed（STUDENT）→ 0 条（未定向，空队列为正常态）
 - GET /api/notice/unconfirmed（SUPPLIER）→ 0 条
-- GET /api/notice/mine?page=1&size=5 → {list,total:47}
-- POST /api/notice/70/confirm（STUDENT，非定向）→ HTTP 404 NOT_FOUND
+- GET /api/notice/mine?page=1&size=5 → {list,total:49}
+- POST /api/notice/73/confirm（STUDENT，非定向）→ HTTP 404 NOT_FOUND
 
 **A4 · reviewed 为终态：教师重提 409、管理员亦不能驳回（终态不可回退）** —— ✅ 通过
 
@@ -71,13 +71,13 @@
 
 **A6 · 导出分流 + 一次性 token：同步回 xlsx 流；异步 token 单次有效，复用 410** —— ✅ 通过
 
-- 结论依据：同步导出 Content-Type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet（xlsx 流）; 制造 111 行明细（HTTP 200）; 异步受理 async=true taskId=32 rowEstimate=123; 轮询 status=done token=有; 首次下载 200; 复用 410/DOWNLOAD_TOKEN_INVALID; 缺 token 参数 400
+- 结论依据：同步导出 Content-Type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet（xlsx 流）; 制造 111 行明细（HTTP 200）; 异步受理 async=true taskId=34 rowEstimate=123; 轮询 status=done token=有; 首次下载 200; 复用 410/DOWNLOAD_TOKEN_INVALID; 缺 token 参数 400
 - POST /api/admin/export/orders（阈值 5000，行数未超）→ HTTP 200，Content-Type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet（**不是 JSON**，前端须按 Content-Type 分流）
 - POST /api/teacher/order-form/submit（101 本批量教材 × 1 课程 × 1 班级）→ HTTP 200
 - PUT /api/admin/config {export.sync_row_threshold:100}（值域下限）→ HTTP 200
-- POST /api/admin/export/orders → data={"rowEstimate":123,"taskId":32,"async":true}
-- GET /api/export-task/32 → status=done，downloadToken=下发（仅任务所有者可见）
-- GET /api/export-task/32/download?token=… → HTTP 200（8346B xlsx）
+- POST /api/admin/export/orders → data={"taskId":34,"rowEstimate":123,"async":true}
+- GET /api/export-task/34 → status=done，downloadToken=下发（仅任务所有者可见）
+- GET /api/export-task/34/download?token=… → HTTP 200（8346B xlsx）
 - 同 token 再下载 → HTTP 410 DOWNLOAD_TOKEN_INVALID「下载链接已失效，请重新导出」——token 在下载开始时即被消费，**原地重试必然失败**
 - 缺 token 参数 → HTTP 400 PARAM_INVALID
 - 非所有者（TEACHER）读同一任务 → HTTP 404 NOT_FOUND（A5 归属失败统一 404）
@@ -93,8 +93,8 @@
 
 **B · X-Request-Id：响应回带，且请求自带会被沿用（前后端日志可串联）** —— ✅ 通过
 
-- 结论依据：响应回带=d796ce0aa7514226; 自带 id 被沿用=it-probe-fixed-id-001
-- GET /api/me → X-Request-Id: d796ce0aa7514226
+- 结论依据：响应回带=e8814c8c2d5545d3; 自带 id 被沿用=it-probe-fixed-id-001
+- GET /api/me → X-Request-Id: e8814c8c2d5545d3
 - GET /api/me（自带 X-Request-Id: it-probe-fixed-id-001）→ 回带 it-probe-fixed-id-001
 
 **分页 · 分页参数归一化：size 超上限被夹到 200，size<=0 退回 20（不报错）** —— ✅ 通过
@@ -111,10 +111,10 @@
 
 **A6-supplier · 供货商异步导出：一次性 token 语义与端点隔离现状** —— ✅ 通过
 
-- 结论依据：受理 taskId=33（async 字段=true）; 轮询 status=done; 下载 200; 复用 410; 经内部端点读任务 404; 经内部端点下载 404
-- POST /api/supplier/export → data={"rowEstimate":123,"taskId":33,"async":true}
-- GET /api/supplier/export-task/33 → status=done
-- GET /api/supplier/export-task/{id}/download?token=… → HTTP 200（7639B）
+- 结论依据：受理 taskId=35（async 字段=true）; 轮询 status=done; 下载 200; 复用 410; 经内部端点读任务 404; 经内部端点下载 404
+- POST /api/supplier/export → data={"taskId":35,"rowEstimate":123,"async":true}
+- GET /api/supplier/export-task/35 → status=done
+- GET /api/supplier/export-task/{id}/download?token=… → HTTP 200（7637B）
 - 同 token 再下载 → HTTP 410 DOWNLOAD_TOKEN_INVALID
 - 供货商任务经内部端点 GET /api/export-task/{id} → HTTP 404 NOT_FOUND
 - 经内部端点下载 → HTTP 404 NOT_FOUND
@@ -139,7 +139,7 @@
 | GET | `/api/me` | 用户信息 + 角色 + 归属 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {firstLoginVerified,phone,permissions,userNo,roles,name,mustChangePassword,activeSemester,…} | ✅ |
 | GET | `/api/me/permissions` | 权限码集合 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(37) | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(39) | ✅ |
 | PUT | `/api/me/password` | 改密（撤销全部 refresh） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 正常 | (专用会话) | 200 | 200 | 0 | {accessToken,refreshToken,expiresIn,mustChangePassword,firstLoginVerified,roles,currentRole,userNo,…} | ✅ |
 
@@ -152,7 +152,7 @@
 |  |  |  | 正常 | TEACHER | 200 | 200 | 0 | {serverTime,semesterId,semesterName,windowStatus,windowStart,windowEnd,channelOpen,activeStatus} | ✅ |
 | GET | `/api/admin/semester` | 学期列表 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(6) | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(7) | ✅ |
 | GET | `/api/admin/semester/{id}` | 学期详情 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {id,name,startDate,endDate,windowStart,windowEnd,channelOpen,autoOpen,…} | ✅ |
@@ -237,7 +237,7 @@
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {batchId} | ✅ |
 | GET | `/api/admin/textbook/template` | 教材导入模板（xlsx 流） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3662B | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3661B | ✅ |
 | GET | `/api/admin/course` | 课程列表 ?semesterId | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(5) | ✅ |
@@ -261,7 +261,7 @@
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {batchId} | ✅ |
 | GET | `/api/admin/teacher-course/template` | 任课导入模板（xlsx 流） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3662B | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3661B | ✅ |
 
 ### 账号管理
 
@@ -284,7 +284,7 @@
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {batchId} | ✅ |
 | GET | `/api/admin/user/import/template?role=student` | 名单导入模板 ?role（xlsx 流） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3646B | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3645B | ✅ |
 
 ### 教师征订
 
@@ -352,13 +352,13 @@
 |  |  |  | 正常 | SECRETARY | 200 | 200 | 0 | {batchId,batchNo,total,okCount,errorCount} | ✅ |
 | GET | `/api/teacher/change` | 我的提交记录（教师/秘书同链） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | STUDENT | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | TEACHER | 200 | 200 | 0 | array(21) | ✅ |
+|  |  |  | 正常 | TEACHER | 200 | 200 | 0 | array(22) | ✅ |
 | GET | `/api/change/org-options` | 提交端目标归属选项（仅 id+名称） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | STUDENT | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
 |  |  |  | 正常 | TEACHER | 200 | 200 | 0 | {colleges,classes} | ✅ |
 | GET | `/api/admin/change` | 审批列表分页 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | page(list=5, total=71) | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | page(list=5, total=74) | ✅ |
 | POST | `/api/admin/change/{id}/review` | 逐条审批（reject 理由必填；通过立即生效） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {id,semesterId,type,targetUserId,targetUserNo,targetUserName,beforeCollegeId,beforeCollegeName,…} | ✅ |
@@ -381,16 +381,16 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | POST | `/api/admin/export/orders` | 教师征订明细（同步 xlsx / 异步 taskId） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 8347B | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 8346B | ✅ |
 | POST | `/api/admin/export/students` | 学生选购汇总 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3668B | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3667B | ✅ |
 | POST | `/api/admin/export/notice` | 通知汇总（body 必带 taskId） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3756B | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 3755B | ✅ |
 | POST | `/api/secretary/export/signature` | 秘书：本院签字版（学院范围后端强制过滤） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | SECRETARY | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 4054B | ✅ |
+|  |  |  | 正常 | SECRETARY | 200 | 200 | (xlsx 流) | binary application/vnd.openxmlformats-officedocument.spreadsheetml.sheet 4053B | ✅ |
 | GET | `/api/export-task/{id}` | 任务进度（downloadToken 仅所有者可见；越权 → 404） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 404 | 404 | NOT_FOUND | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {id,bizType,paramsJson,rowEstimate,tokenExpireAt,expiresAt,status,progressPct,…} | ✅ |
@@ -404,12 +404,12 @@
 | GET | `/api/notice/unconfirmed` | 未确认队列（按 target_roles 定向） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 正常 | TEACHER | 200 | 200 | 0 | array(1) | ✅ |
 | GET | `/api/notice/mine` | 我的通知（全量含已确认，分页） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
-|  |  |  | 正常 | TEACHER | 200 | 200 | 0 | page(list=5, total=47) | ✅ |
+|  |  |  | 正常 | TEACHER | 200 | 200 | 0 | page(list=5, total=49) | ✅ |
 | POST | `/api/notice/{taskId}/confirm` | 确认收到 → 204（幂等；非定向任务 404） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 正常 | TEACHER | 200/204 | 204 | (xlsx 流) | binary  0B | ✅ |
 | GET | `/api/admin/notice/tasks` | 本学期任务列表 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(51) | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | array(53) | ✅ |
 | POST | `/api/admin/notice/tasks` | 手动创建（同学期已有 active → 409） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {id,semesterId,title,content,targetRoles,roundLimit,intervalHours,source,…} | ✅ |
@@ -435,7 +435,7 @@
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | (data 键省略) | ✅ |
 | GET | `/api/admin/audit` | 审计查询（时间格式 yyyy-MM-dd HH:mm:ss） | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
-|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | page(list=5, total=2109) | ✅ |
+|  |  |  | 正常 | ADMIN | 200 | 200 | 0 | page(list=5, total=2292) | ✅ |
 | GET | `/api/admin/dashboard` | 看板三指标 + 学院进度 | 未鉴权 | (无 token) | 401 | 401 | UNAUTHORIZED | (data 键省略) | ✅ |
 |  |  |  | 越权 | TEACHER | 403 | 403 | FORBIDDEN | (data 键省略) | ✅ |
 |  |  |  | 正常 | ADMIN | 200 | 200 | 0 | {semesterId,windowStatus,channelOpen,serverTime,colleges,pendingReviewTotal,unconfirmedNoticeTotal,studentOrderTotal,…} | ✅ |

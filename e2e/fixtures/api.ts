@@ -56,6 +56,9 @@ export const PERMISSIONS_BY_ROLE: Record<RoleCode, string[]> = {
     'config:config:manage',
     'audit:log:view',
     'dashboard:stat:view',
+    // BE-2：角色与权限管理（后端 data-permission.sql 新增的 2 条，37 → 39）
+    'role:manage',
+    'role:permission:assign',
   ],
   SECRETARY: [
     'semester:window:view',
@@ -116,6 +119,7 @@ export const MENU_BY_ROLE: Record<RoleCode, string[]> = {
     '导出中心',
     '通知管理',
     '审计日志',
+    '角色管理',
   ],
   // 导出中心归属超管（SPEC §4）：秘书虽有 export:order:create，但该页会无条件拉取
   // 学院列表/通知任务/全院表单等超管专属数据，秘书进入会吃 403 被全局处理弹到 /403 页

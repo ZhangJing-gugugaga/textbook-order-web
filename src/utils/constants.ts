@@ -163,6 +163,9 @@ export const PERMISSIONS = {
   // 通知
   NOTICE_TASK_MANAGE: 'notice:task:manage',
   NOTICE_TASK_VIEW: 'notice:task:view',
+  // 角色与权限（BE-2）
+  ROLE_MANAGE: 'role:manage',
+  ROLE_PERMISSION_ASSIGN: 'role:permission:assign',
   // 配置 / 审计 / 看板
   CONFIG_MANAGE: 'config:config:manage',
   AUDIT_VIEW: 'audit:log:view',

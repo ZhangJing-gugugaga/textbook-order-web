@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import type { FormInstance } from 'element-plus'
 import { accountsApi } from '@/api/people'
+import { roleApi } from '@/api/role'
 import { orgApi } from '@/api/semester'
 import PermButton from '@/components/PermButton.vue'
 import ServerTable from '@/components/ServerTable.vue'
+import { useAuthStore } from '@/stores/auth'
 import { COPY, PERMISSIONS, ROLE_LABELS, ROLES, USER_NO_PATTERN } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
 import { asRow } from '@/utils/table'
 import { validateForm } from '@/utils/validate'
-import type { Account, RoleCode } from '@/types'
+import type { Account, RoleCode, RoleListItem } from '@/types'
 
 /**
  * 账号管理（PRD 教材室-账号管理 / API.md §3.5）：
@@ -26,6 +28,7 @@ const filters = reactive({
 })
 const colleges = ref<{ id: number; name: string }[]>([])
 const tableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
+const auth = useAuthStore()
 
 /** 筛选条件 → 接口参数（空串不下发） */
 function fetchPage({ page, size }: { page: number; size: number }) {
@@ -138,6 +141,69 @@ async function resetPassword(row: Account) {
   }
 }
 
+/* ---------------- 调整角色（BE-2 / 决策 FE-W2） ---------------- */
+const roleDialogVisible = ref(false)
+const roleTarget = ref<Account | null>(null)
+const roleOptions = ref<RoleListItem[]>([])
+const selectedRoles = ref<string[]>([])
+const savingRoles = ref(false)
+
+/** 本人不能把自己改成不含 ADMIN：否则会立刻失去管理台权限（后端也有 400 兜底） */
+const selfIsAdminLocked = computed(() => {
+  const target = roleTarget.value
+  if (!target) return false
+  const isSelf = auth.user?.userNo === target.userNo
+  return isSelf && target.roles.includes(ROLES.ADMIN)
+})
+
+function openRoles(row: Account) {
+  roleTarget.value = row
+  selectedRoles.value = [...row.roles]
+  roleDialogVisible.value = true
+  if (!roleOptions.value.length) {
+    // 角色选项取真实角色表（比前端硬编码 ROLES 更准：含自定义角色）
+    void roleApi
+      .list()
+      .then((list) => {
+        roleOptions.value = list
+      })
+      .catch((error: Error) => ElMessage.error(error?.message || COPY.FAILED))
+  }
+}
+
+async function submitRoles() {
+  const target = roleTarget.value
+  if (!target) return
+  if (!selectedRoles.value.length) {
+    ElMessage.warning('请至少选择一个角色')
+    return
+  }
+  if (selfIsAdminLocked.value && !selectedRoles.value.includes(ROLES.ADMIN)) {
+    ElMessage.error('不能移除本人（当前登录超管）的教材室角色')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '调整角色后该账号将被强制下线，需重新登录才能生效。',
+      `调整 ${target.name}（${target.userNo}）的角色`,
+      { type: 'warning', confirmButtonText: '确认调整', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  savingRoles.value = true
+  try {
+    await accountsApi.updateRoles(target.id, selectedRoles.value)
+    ElMessage.success('角色已调整，该账号需重新登录')
+    roleDialogVisible.value = false
+    tableRef.value?.reload(false)
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
+  } finally {
+    savingRoles.value = false
+  }
+}
+
 onMounted(async () => {
   colleges.value = await orgApi.colleges().catch(() => [])
 })
@@ -229,10 +295,54 @@ onMounted(async () => {
             >
               重置密码
             </PermButton>
+            <PermButton
+              :code="PERMISSIONS.USER_MANAGE"
+              size="small"
+              text
+              @click="openRoles(asRow<Account>(row))"
+            >
+              调整角色
+            </PermButton>
           </div>
         </template>
       </el-table-column>
     </ServerTable>
+
+    <el-dialog
+      v-model="roleDialogVisible"
+      :title="`调整角色 · ${roleTarget?.name ?? ''}`"
+      width="460px"
+      append-to-body
+    >
+      <el-form label-width="90px">
+        <el-form-item label="学号/工号">
+          <span>{{ roleTarget?.userNo }}</span>
+        </el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="selectedRoles" multiple style="width: 100%">
+            <el-option
+              v-for="role in roleOptions"
+              :key="role.roleCode"
+              :label="role.roleName"
+              :value="role.roleCode"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <el-alert
+        v-if="selfIsAdminLocked"
+        class="mb-8"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="这是您本人的账号：不能移除「教材室」角色，否则会立即失去管理台权限"
+      />
+      <p class="text-muted">调整后该账号将被强制下线，需重新登录才能生效。</p>
+      <template #footer>
+        <el-button @click="roleDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingRoles" @click="submitRoles">确认调整</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="createVisible" title="新建账号" width="480px" append-to-body>
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="100px">
