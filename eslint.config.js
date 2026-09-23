@@ -53,12 +53,6 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals.node } },
   },
   {
-    // 联调/契约测试脚本是 Node CLI：需要 node 全局与 stdout 输出
-    files: ['scripts/**/*.mjs', 'scripts/**/*.js'],
-    languageOptions: { globals: { ...globals.node } },
-    rules: { 'no-console': 'off' },
-  },
-  {
     rules: {
       'vue/multi-word-component-names': 'off',
       'vue/attributes-order': 'off',
@@ -72,6 +66,15 @@ export default tseslint.config(
       'no-undef': 'off',
       'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
+  },
+  {
+    // 联调/契约/全链路脚本是 Node CLI：需要 node 全局与 stdout 输出。
+    // **必须放在上面那条全局规则之后**——flat config 里后匹配的块覆盖先匹配的块，
+    // 该块若放在前面，其 `no-console: off` 会被全局的 `['warn', …]` 静默覆盖
+    // （表现为脚本里的 console.log 被报 warn，而 `--max-warnings 0` 直接判失败）。
+    files: ['scripts/**/*.mjs', 'scripts/**/*.js'],
+    languageOptions: { globals: { ...globals.node } },
+    rules: { 'no-console': 'off' },
   },
   prettier,
 )

@@ -13,9 +13,14 @@ import type { PermissionGroup, RoleListItem } from '@/types'
 export const roleApi = {
   /** 角色列表（含内置标记、账号数、已分配权限码） */
   list: () => http.get<RoleListItem[]>('/admin/role'),
-  /** 新建角色（roleCode 须匹配 ^[A-Z][A-Z0-9_]{1,31}$；重码 409） */
+  /**
+   * 新建角色（roleCode 须匹配 ^[A-Z][A-Z0-9_]{1,31}$；重码 400「角色编码已存在」）。
+   *
+   * 返回**新角色 id（裸数字）**——OpenAPI 为 `ApiResponseLong`，不是角色对象。
+   * 此前这里标成 `RoleListItem`，与后端实际响应不符（按对象取值会得到 undefined）。
+   */
   create: (data: { roleCode: string; roleName: string; sort?: number }) =>
-    http.post<RoleListItem>('/admin/role', data),
+    http.post<number>('/admin/role', data),
   /** 编辑角色（仅名称与排序；**编码不可改**） */
   update: (id: number, data: { roleName: string; sort?: number }) =>
     http.put<RoleListItem>(`/admin/role/${id}`, data),

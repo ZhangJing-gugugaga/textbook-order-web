@@ -269,13 +269,20 @@ export interface ImportPreview {
 /* ---------------- 异动申请 ---------------- */
 export type ChangeStatus = 'pending_review' | 'approved' | 'rejected'
 
+/** 异动**对象**（给谁异动）——对应 `change_request.type` */
 export type ChangeType = 'student' | 'teacher'
+
+/** 异动**类型**（因何异动）——对应 `change_request.change_type`（BE-7a） */
+export type ChangeReasonType = 'MAJOR_TRANSFER' | 'GRADE_REPEAT' | 'UPGRADE' | 'OTHER'
 
 /** ChangeRequestVO（提交端与审批详情） */
 export interface ChangeRequest {
   id: number
   semesterId: number
   type: ChangeType | string
+  /** 异动类型；历史数据为 null → 前端展示「未分类」 */
+  changeType?: ChangeReasonType | string | null
+  changeTypeLabel?: string | null
   targetUserId?: number
   targetUserNo: string
   targetUserName?: string
@@ -304,6 +311,9 @@ export interface ChangeRequestListItem {
   id: number
   semesterId: number
   type: ChangeType | string
+  /** 异动类型；历史数据为 null → 前端展示「未分类」 */
+  changeType?: ChangeReasonType | string | null
+  changeTypeLabel?: string | null
   targetUserId?: number
   targetUserName?: string
   targetUserNo?: string
@@ -525,6 +535,30 @@ export interface NoticeProgress {
   roundLimit: number
 }
 
+/**
+ * 立即发送一轮的统计（BE-5b `POST /admin/notice/tasks/{id}/send-now`）。
+ * `skipped` / `skippedReason` 覆盖「本轮被跳过」的场景（如未到 `interval_hours` 间隔）。
+ */
+export interface NoticeSendResult {
+  roundNo: number
+  total: number
+  sent: number
+  unauthorized: number
+  failed: number
+  skipped: number
+  skippedReason?: string
+}
+
+/**
+ * 通知配置下发（BE-5e `GET /notice/subscribe-config`，登录即可读）。
+ * `subscribeTemplateId` 未配置时为 `null` —— 前端此时不应发起订阅授权，
+ * 保持「弹窗为唯一触达」的降级文案。
+ */
+export interface SubscribeConfig {
+  subscribeTemplateId: string | null
+  popupQueueMax: number
+}
+
 /** NoticeFailureItem（线下兜底名单） */
 export interface NoticeFailure {
   userId: number
@@ -603,12 +637,13 @@ export interface AsyncExportAccepted {
 }
 
 /** 异动 Excel 批量提交结果 */
+/**
+ * 异动导入受理体。BE-7b 起改为**异步批次**：原同步结果体
+ * `{batchId,batchNo,total,okCount,errorCount}` 已废弃，进度与错误明细走
+ * `GET /api/batch/{batchId}` 与 `/api/batch/{batchId}/errors`。
+ */
 export interface ChangeImportResult {
   batchId: number
-  batchNo: string
-  total: number
-  okCount: number
-  errorCount: number
 }
 
 /** 系统配置项 */

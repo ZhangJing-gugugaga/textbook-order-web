@@ -168,7 +168,8 @@ describe('角色管理页', () => {
   })
 
   it('新建角色 → 提交 {roleCode, roleName, sort}', async () => {
-    create.mockResolvedValue(role({ id: 10, roleCode: 'NEW_ROLE' }))
+    // 后端 POST /admin/role 返回**裸 id**（OpenAPI ApiResponseLong），不是角色对象
+    create.mockResolvedValue(10)
     const wrapper = await mountPage()
 
     await wrapper

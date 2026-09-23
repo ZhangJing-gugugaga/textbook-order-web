@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { configApi } from '@/api/auth'
+import { noticeApi } from '@/api/notice'
 import { useAuthStore } from '@/stores/auth'
 import { CONFIG_KEYS, EXPORT_SYNC_MAX_ROWS, PERMISSIONS } from '@/utils/constants'
 
@@ -42,16 +43,27 @@ export const useConfigStore = defineStore('config', {
   },
   actions: {
     /**
-     * 读取 system_config（8 键）。
+     * 读取配置。
      *
-     * 后端 GET /api/admin/config 仅超管可用（config:config:manage），其他角色调用会 403，
-     * 而全局 403 处理会跳 /403 页 —— 因此这里先做权限判断：
-     * 非超管直接使用与后端种子一致的内置默认值（DEFAULTS），不发请求。
+     * 后端 `GET /api/admin/config` 仅超管可用（config:config:manage），其他角色调用会 403，
+     * 而全局 403 处理会跳 /403 页 —— 因此按角色分流：
+     *  · 超管：读全量 8 键；
+     *  · 非超管：只读 `GET /api/notice/subscribe-config`（登录即可）取 `popupQueueMax`，
+     *    其余键沿用与后端种子一致的内置默认值。
+     * 两者失败都静默兜底，不阻塞页面（非超管的弹窗队列上限默认 5）。
      */
     async load(force = false) {
       if (this.loaded && !force) return
       const auth = useAuthStore()
       if (!auth.has(PERMISSIONS.CONFIG_MANAGE)) {
+        try {
+          const config = await noticeApi.subscribeConfig()
+          if (config?.popupQueueMax != null) {
+            this.config[CONFIG_KEYS.NOTICE_POPUP_QUEUE_MAX] = config.popupQueueMax
+          }
+        } catch {
+          // 接口失败保留内置默认值（5），不弹错、不跳 403
+        }
         this.loaded = true
         return
       }

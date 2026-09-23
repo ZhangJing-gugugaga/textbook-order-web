@@ -2,17 +2,34 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { changeApi } from '@/api/change'
+import { batchApi } from '@/api/people'
+import { downloadErrorDetail } from '@/api/http'
 import FieldCheckResult from '@/components/FieldCheckResult.vue'
+import ImportWizard from '@/components/ImportWizard.vue'
 import { useConfigStore } from '@/stores/config'
-import { CHANGE_STATUS_META, COPY, statusMetaOf } from '@/utils/constants'
+import {
+  CHANGE_REASON_LABELS,
+  CHANGE_REASON_TYPES,
+  CHANGE_STATUS_META,
+  CHANGE_TARGET_LABELS,
+  COPY,
+  statusMetaOf,
+} from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
-import type { ChangeImportResult, ChangeRequest } from '@/types'
+import type { ChangeReasonType, ChangeRequest } from '@/types'
 
 /**
  * 异动申请（PRD 学院秘书-异动申请 / API.md §3.8）：
  * 逐条（POST /api/secretary/change）或 Excel 批量（POST /api/secretary/change/import）提交，
  * 一律走两级审查，页面不出现「直接生效」路径；
  * 字段审查不过的记录直接落「已驳回」并回显 fieldCheckResult（不抛 400）。
+ *
+ * 2026-09-23（FE-W5）三处补齐：
+ *  1) **异动类型**（转专业/留级/专升本/其他，BE-7a）——必填，逐条提交与导入第 6 列共用同一套取值；
+ *     原「异动类型」单选组实为**异动对象**（学生/教师），已改名以免与 `changeType` 混淆；
+ *  2) **模板下载**——`GET /api/secretary/change/template`（BE-7c，6 列）；
+ *  3) **导入异步化**——`POST /api/secretary/change/import` 改回 `{batchId}`（BE-7b），
+ *     上传后走 `ImportWizard` 的批次轮询 + 错误明细下载，不再是"上传即出统计"的同步交互。
  */
 const activeTab = ref<'submit' | 'progress'>('submit')
 const config = useConfigStore()
@@ -24,14 +41,22 @@ const classes = ref<{ id: number; name: string; majorId?: number }[]>([])
 const submitting = ref(false)
 const form = ref({
   type: 'student' as 'student' | 'teacher',
+  /** 异动类型：默认「其他」（决策 D4/D7 默认口径） */
+  changeType: 'OTHER' as ChangeReasonType,
   targetUserNo: '',
   targetCollegeId: undefined as number | undefined,
   targetClassId: undefined as number | undefined,
 })
 const lastResult = ref<ChangeRequest | null>(null)
 
+const reasonOptions = Object.entries(CHANGE_REASON_TYPES).map(([value, label]) => ({
+  value,
+  label,
+}))
+
 function validateSingle() {
   if (!form.value.targetUserNo.trim()) return '请输入目标学号/工号'
+  if (!form.value.changeType) return '请选择异动类型'
   if (!form.value.targetCollegeId) return '请选择目标学院'
   if (form.value.type === 'student' && !form.value.targetClassId) return '学生异动需选择目标班级'
   return ''
@@ -48,6 +73,7 @@ async function submitSingle() {
     // 教师异动仅支持变更学院：传 targetClassId 会被后端 400（W16），故按类型裁剪
     const payload = {
       type: form.value.type,
+      changeType: form.value.changeType,
       targetUserNo: form.value.targetUserNo.trim(),
       targetCollegeId: form.value.targetCollegeId as number,
       targetClassId: form.value.type === 'student' ? form.value.targetClassId : undefined,
@@ -61,6 +87,7 @@ async function submitSingle() {
     }
     form.value = {
       type: 'student',
+      changeType: 'OTHER',
       targetUserNo: '',
       targetCollegeId: undefined,
       targetClassId: undefined,
@@ -73,28 +100,10 @@ async function submitSingle() {
   }
 }
 
-/* ---------------- Excel 批量（同步批次，直接回统计） ---------------- */
-const lastBatch = ref<ChangeImportResult | null>(null)
-const batchUploading = ref(false)
-
-async function uploadBatch(file: File) {
-  if (!/\.xlsx$/i.test(file.name)) {
-    ElMessage.error('仅支持 .xlsx 文件')
-    return false
-  }
-  batchUploading.value = true
-  try {
-    lastBatch.value = await changeApi.importBatch(file)
-    ElMessage.success(
-      `批次 ${lastBatch.value.batchNo}：成功 ${lastBatch.value.okCount} / 失败 ${lastBatch.value.errorCount}`,
-    )
-    await loadProgress()
-  } catch (e) {
-    ElMessage.error((e as Error)?.message || COPY.FAILED)
-  } finally {
-    batchUploading.value = false
-  }
-  return false
+/* ---------------- Excel 批量（异步批次，ImportWizard 负责进度与错误明细） ---------------- */
+function onBatchFinished() {
+  // 导入完成后刷新提交记录，让新落库的异动立刻可见
+  void loadProgress()
 }
 
 /* ---------------- 我的提交记录 ----------------
@@ -103,6 +112,7 @@ async function uploadBatch(file: File) {
  * 且带 before/after 名称与 fieldCheckResult，正是提交端需要的视图。
  */
 const status = ref('')
+const reasonFilter = ref('')
 const rows = ref<ChangeRequest[]>([])
 const loading = ref(false)
 
@@ -118,10 +128,24 @@ async function loadProgress() {
   }
 }
 
-/** 服务端返回本人全量记录，状态筛选在前端做 */
+/** 服务端返回本人全量记录，状态与异动类型筛选在前端做 */
 const filtered = computed(() =>
-  status.value ? rows.value.filter((r) => r.status === status.value) : rows.value,
+  rows.value.filter((r) => {
+    if (status.value && r.status !== status.value) return false
+    // 历史数据 change_type 为 null：用 UNCLASSIFIED 兜底，便于单独筛「未分类」
+    if (reasonFilter.value && (r.changeType || 'UNCLASSIFIED') !== reasonFilter.value) return false
+    return true
+  }),
 )
+
+/**
+ * 异动类型展示文案。入参收 `unknown` 并在函数内收窄——el-table 的 slot 行类型是
+ * `DefaultRow`，而模板插值里写 `asRow<T>(row)` 会被 Prettier 的 Vue 解析器误判为标签。
+ */
+const reasonText = (raw: unknown) => {
+  const row = raw as ChangeRequest
+  return CHANGE_REASON_LABELS[row.changeType ?? 'UNCLASSIFIED'] ?? '未分类'
+}
 
 /** el-table 行类型为 DefaultRow，此处收窄回业务类型（第三方边界） */
 function beforeText(raw: unknown) {
@@ -150,11 +174,25 @@ onMounted(async () => {
       <el-tab-pane label="提交异动" name="submit">
         <el-card shadow="never" style="max-width: 620px">
           <el-form :model="form" label-width="120px">
-            <el-form-item label="异动类型">
+            <el-form-item label="异动对象">
               <el-radio-group v-model="form.type">
                 <el-radio-button value="student">学生异动</el-radio-button>
                 <el-radio-button value="teacher">教师异动</el-radio-button>
               </el-radio-group>
+            </el-form-item>
+            <el-form-item label="异动类型" required>
+              <el-select
+                v-model="form.changeType"
+                style="width: 100%"
+                data-testid="change-reason-select"
+              >
+                <el-option
+                  v-for="item in reasonOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                />
+              </el-select>
             </el-form-item>
             <el-form-item label="目标学号/工号" required>
               <el-input v-model="form.targetUserNo" maxlength="32" placeholder="如 20230102" />
@@ -197,49 +235,39 @@ onMounted(async () => {
           title="系统字段审查"
         />
 
-        <div class="mt-16">
-          <div class="flex-between mb-8">
-            <span class="import-title">
-              异动名单 Excel 批量提交（学号/工号、变更类型、目标学院、目标班级、原因）
-            </span>
-          </div>
-          <el-upload
-            drag
-            :auto-upload="true"
-            :show-file-list="false"
-            :before-upload="uploadBatch"
-            accept=".xlsx"
-            action="#"
-          >
-            <div class="import-drop">
-              <el-icon :size="32"><UploadFilled /></el-icon>
-              <div class="import-drop-text">
-                将 .xlsx 文件拖到此处，或
-                <em>点击上传</em>
-              </div>
-              <div class="text-muted">
-                单文件 ≤
-                {{ config.importMaxSizeMb }}MB；服务端逐行走字段审查，审查不过的行直接落「已驳回」
-              </div>
-            </div>
-          </el-upload>
-          <el-alert
-            v-if="lastBatch"
-            class="mt-8"
-            :title="`批次 ${lastBatch.batchNo}：共 ${lastBatch.total} 行，成功 ${lastBatch.okCount}，失败 ${lastBatch.errorCount}`"
-            type="info"
-            :closable="false"
-            show-icon
+        <div class="mt-16" style="max-width: 760px">
+          <ImportWizard
+            title="异动名单 Excel 批量提交（学号/工号、异动对象、目标学院、目标班级、原因、异动类型）"
+            :uploader="changeApi.importBatch"
+            :poller="batchApi.detail"
+            :error-downloader="downloadErrorDetail"
+            :template-downloader="changeApi.template"
+            @finished="onBatchFinished"
           />
         </div>
       </el-tab-pane>
 
       <el-tab-pane label="审批进度" name="progress">
         <div class="app-toolbar">
-          <el-select v-model="status" clearable placeholder="全部状态" style="width: 170px">
+          <el-select v-model="status" clearable placeholder="全部状态" style="width: 150px">
             <el-option label="待审批" value="pending_review" />
             <el-option label="已通过" value="approved" />
             <el-option label="已驳回" value="rejected" />
+          </el-select>
+          <el-select
+            v-model="reasonFilter"
+            clearable
+            placeholder="全部异动类型"
+            style="width: 160px"
+            data-testid="change-reason-filter"
+          >
+            <el-option
+              v-for="item in reasonOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+            <el-option label="未分类" value="UNCLASSIFIED" />
           </el-select>
           <el-button @click="loadProgress">刷新</el-button>
           <span class="text-muted">
@@ -253,9 +281,14 @@ onMounted(async () => {
           <el-table-column prop="targetUserName" label="姓名" width="110">
             <template #default="{ row }">{{ row.targetUserName || '—' }}</template>
           </el-table-column>
-          <el-table-column label="类型" width="110">
+          <el-table-column label="异动对象" width="110">
             <template #default="{ row }">
-              {{ row.type === 'student' ? '学生异动' : '教师异动' }}
+              {{ CHANGE_TARGET_LABELS[row.type] || row.type }}
+            </template>
+          </el-table-column>
+          <el-table-column label="异动类型" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" type="info">{{ reasonText(row) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="当前归属" min-width="170">

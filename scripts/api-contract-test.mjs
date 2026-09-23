@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 全接口联调契约测试（95 端点 · 真实 HTTP + 真实数据库）
+ * 全接口联调契约测试（111 端点 · 真实 HTTP + 真实数据库）
  * ============================================================================
  * 目的：把后端 API.md / OpenAPI 的契约**逐条打到运行中的服务上**，记录请求与响应的
  * 实际结果并与文档预期比对，产出可复查的测试清单。
@@ -33,6 +33,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { inflateRawSync } from 'node:zlib'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -239,6 +240,19 @@ function scenario(id, name, ok, detail, evidence = []) {
  * 夹具（全部 `[IT]` 前缀；按名称查找，存在即复用 → 可重复执行）
  * ==========================================================================*/
 const fx = {}
+
+/** 角色 CRUD 用例的夹具角色编码（每次运行新建 → 用 → 删，保证可重复执行） */
+const TEST_ROLE_CODE = 'IT_TEST_ROLE'
+
+/** 异动导入模板的期望表头（BE-7c：6 列，第 2 列是「异动对象」而非「变更类型」） */
+const CHANGE_TEMPLATE_HEADERS = [
+  '学号/工号',
+  '异动对象',
+  '目标学院',
+  '目标班级',
+  '原因',
+  '异动类型',
+]
 
 async function ensureCollege() {
   const list = await call('GET', '/api/admin/college', { role: 'ADMIN' })
@@ -481,6 +495,55 @@ async function buildFixtures() {
     stu = await findUser('ITSTU03')
   }
   fx.studentId = stu?.id
+
+  // 账号角色覆盖用例（BE-2 #7）专用账号：角色变更会 role_version+1 并撤销全部 refresh，
+  // 用独立账号承载，避免把其他用例正在用的会话踢下线。
+  fx.roleTestUserId = (
+    await ensureUser('ITROLE', '[IT]联调角色账号', '13700009041', ['TEACHER'])
+  ).id
+
+  /* ---------- 秘书明细端点（BE-3）所需的「同院」教师 ----------
+   * `canAccessForm` 的秘书分支取的是**教师的** `user_semester_profile.college_id`，
+   * 而 IT9001..IT9004 刻意不带学院（见上方注释，避免被名单导入停用）→ 需专门建一个带学院的教师。
+   * 学院取「计算机学院」而不是夹具学院：夹具学院是 `teacher-import.xlsx` 的停用比对范围，
+   * 放那里的教师会被导入用例当场停用。
+   */
+  let secTeacher = await findUser('IT9005')
+  if (!secTeacher) {
+    await call('POST', '/api/admin/user', {
+      role: 'ADMIN',
+      body: {
+        userNo: 'IT9005',
+        name: '[IT]联调同院教师',
+        phone: '13700009005',
+        collegeId: fx.csCollegeId,
+        classId: fx.csClassAId,
+        roleCodes: ['TEACHER'],
+      },
+    })
+    secTeacher = await findUser('IT9005')
+  }
+  fx.secTeacherId = secTeacher?.id
+  if (fx.secTeacherId) {
+    // 任课关系落在计算机学院的班级上，使同院教师能提交表单
+    await ensureAssignment(fx.semesterId, fx.secTeacherId, fx.courseId, fx.csClassAId)
+  }
+
+  /* ---------- 夹具账号角色归一 ----------
+   * 夹具账号可能被历史用例改过角色（实测 IT9001 曾被加上 SECRETARY → 登录后
+   * currentRole=SECRETARY，教师自助端点一律 403）。这里用 BE-2 的账号角色覆盖接口复位，
+   * 保证每轮起点一致。该接口会 role_version+1 + 撤销全部 refresh，
+   * 故必须在任何夹具会话建立之前调用（buildFixtures 早于所有场景与端点）。
+   */
+  for (const [uid, roles] of [
+    [fx.userA?.id, ['TEACHER']],
+    [fx.userB?.id, ['TEACHER']],
+    [fx.userD?.id, ['TEACHER']],
+    [fx.secTeacherId, ['TEACHER']],
+  ]) {
+    await normalizeFixtureRoles(uid, roles)
+  }
+
   // 名单导入会把班级 student_count 刷新为「导入行数」（实测：导入 1 行 → 人数变 1），
   // 而班级人数是教师填报 QTY_RANGE 的上限来源。这里改回夹具预期值，避免数量上限被压到 1。
   await call('PUT', `/api/admin/class/${fx.classId}`, {
@@ -518,7 +581,7 @@ async function uploadFile(method, path, role, fileName) {
 }
 
 /* ============================================================================
- * 端点清单（95）
+ * 端点清单（111）
  *
  * 路径里的 `{占位符}` 由下方 PATH_PARAMS 映射到夹具值；`p` 保留模板形态仅用于报告展示。
  * 探针载荷集中放在 DENY_BODIES / DENY_FORMS：**越权探针必须带同形载荷**，
@@ -560,6 +623,7 @@ const PATH_PARAMS = {
   'POST /api/admin/semester/{id}/window/extend': { id: 'itSemesterId' },
   'POST /api/admin/semester/{id}/activate': { id: 'itSemesterId' },
   'POST /api/admin/semester/{id}/archive': { id: 'itSemesterId' },
+  'POST /api/admin/semester/{id}/unarchive': { id: 'itSemesterId' },
   'PUT /api/admin/college/{id}': { id: 'collegeId' },
   'PUT /api/admin/major/{id}': { id: 'majorId' },
   'PUT /api/admin/class/{id}': { id: 'classId' },
@@ -584,6 +648,17 @@ const PATH_PARAMS = {
   'POST /api/notice/{taskId}/confirm': { taskId: 'noticeTaskId' },
   'POST /api/admin/teacher-course/import?semesterId={semesterId}': { semesterId: 'semesterId' },
   'POST /api/admin/user/import?role=teacher&semesterId={semesterId}': { semesterId: 'semesterId' },
+  'POST /api/admin/user/import/preview?role=teacher&semesterId={semesterId}': {
+    semesterId: 'semesterId',
+  },
+  // BE-2 / BE-3 / BE-4 / BE-5b / BE-7c 新增端点
+  'PUT /api/admin/role/{id}': { id: 'testRoleId' },
+  'DELETE /api/admin/role/{id}': { id: 'testRoleId' },
+  'PUT /api/admin/role/{id}/permissions': { id: 'testRoleId' },
+  'PUT /api/admin/user/{id}/roles': { id: 'roleTestUserId' },
+  'GET /api/teacher/order-forms/{id}': { id: 'formId' },
+  'GET /api/secretary/order-forms/{id}': { id: 'formId' },
+  'POST /api/admin/notice/tasks/{id}/send-now': { id: 'noticeTaskId' },
 }
 
 const DENY_BODIES = {
@@ -598,6 +673,8 @@ const DENY_BODIES = {
   'POST /api/admin/semester/{id}/window/extend': () => ({ windowEnd: '2027-12-31T23:59:59' }),
   // activate 的 version 是 required：越权探针不带 body 会 400 而非 403
   'POST /api/admin/semester/{id}/activate': () => ({ version: 0 }),
+  // unarchive 的 version + confirm 都是 required：同理需带同形载荷
+  'POST /api/admin/semester/{id}/unarchive': () => ({ version: 0, confirm: true }),
   'POST /api/admin/college': () => ({ name: '[IT]联调学院', fullName: '[IT] 联调学院' }),
   'PUT /api/admin/college/{id}': () => ({ name: '[IT]联调学院', fullName: '[IT] 联调学院' }),
   'POST /api/admin/major': () => ({
@@ -680,10 +757,21 @@ const DENY_BODIES = {
   'POST /api/admin/export/orders': () => ({ semesterId: fx.semesterId }),
   'POST /api/admin/export/students': () => ({ semesterId: fx.semesterId }),
   'POST /api/secretary/export/signature': () => ({ semesterId: fx.semesterId }),
+  // BE-2：越权探针必须带合法载荷，否则会先命中 400 参数校验而不是 403 权限门
+  'POST /api/admin/role': () => ({
+    roleCode: 'IT_DENY_ROLE',
+    roleName: '[IT] 越权探针',
+    sort: 1,
+  }),
+  'PUT /api/admin/role/{id}': () => ({ roleName: '[IT] 越权探针', sort: 1 }),
+  'PUT /api/admin/role/{id}/permissions': () => ({ permCodes: [] }),
+  'PUT /api/admin/user/{id}/roles': () => ({ roleCodes: ['TEACHER'] }),
 }
 
 /** multipart 端点的越权探针必须同样上传文件，否则解析失败会盖住权限判断 */
 const DENY_FORMS = {
+  // 预览与导入同为 multipart：不带同形载荷会先命中 400（缺文件）而不是 403
+  'POST /api/admin/user/import/preview?role=teacher&semesterId={semesterId}': 'teacher-import.xlsx',
   'POST /api/admin/textbook/import': 'textbook-import.xlsx',
   'POST /api/admin/teacher-course/import?semesterId={semesterId}': 'teacher-course-import.xlsx',
   'POST /api/admin/user/import?role=teacher&semesterId={semesterId}': 'teacher-import.xlsx',
@@ -975,6 +1063,28 @@ function endpoints() {
       run: () => call('POST', `/api/admin/semester/${fx.itSemesterId}/archive`, { role: 'ADMIN' }),
       expectCode: ['STATE_CONFLICT'],
       expectNote: '状态机门禁：仅 active 学期可归档 → draft 夹具学期归档返回 409 STATE_CONFLICT',
+      expectHttp: [409],
+    },
+    {
+      g: '学期与窗口',
+      m: 'POST',
+      p: '/api/admin/semester/{id}/unarchive',
+      desc: '撤销归档（V1.0.7 受限回滚：仅当无 active 学期时可用）',
+      role: 'ADMIN',
+      deny: 'TEACHER',
+      last: true,
+      /**
+       * 只断言门禁：unarchive 的前提是「当前没有 active 学期」，而种子库始终有一个
+       * active 学期（契约测试必须保持业务可用），故此处验证 409 分支而非真实撤销归档。
+       * 正向路径在一次性库里验证（backend scripts/verify-report-2026-09-23.sh）。
+       */
+      run: () =>
+        call('POST', `/api/admin/semester/${fx.itSemesterId}/unarchive`, {
+          role: 'ADMIN',
+          body: { version: 0, confirm: true },
+        }),
+      expectCode: ['STATE_CONFLICT'],
+      expectNote: '状态机门禁：当前已有 active 学期 → 409（撤销归档前必须先归档它）',
       expectHttp: [409],
     },
 
@@ -1294,6 +1404,141 @@ function endpoints() {
       run: () => call('GET', '/api/admin/teacher-course/template', { role: 'ADMIN' }),
     },
 
+    /* ---------- 角色与权限（BE-2 · 7） ---------- */
+    {
+      g: '角色与权限',
+      m: 'GET',
+      p: '/api/admin/role',
+      desc: '角色列表（含 builtIn / userCount / permCodes）',
+      role: 'ADMIN',
+      deny: 'SECRETARY',
+      run: async () => {
+        const r = await call('GET', '/api/admin/role', { role: 'ADMIN' })
+        const admin = (r.data || []).find((x) => x.roleCode === 'ADMIN')
+        if (admin) {
+          notes.push(
+            `角色列表：${(r.data || []).length} 个角色；ADMIN.permCodes=${(admin.permCodes || []).length} 条，builtIn=${admin.builtIn}`,
+          )
+        }
+        return r
+      },
+    },
+    {
+      g: '角色与权限',
+      m: 'GET',
+      p: '/api/admin/permission',
+      desc: '权限目录（按 module 分组）',
+      role: 'ADMIN',
+      deny: 'SECRETARY',
+      run: async () => {
+        const r = await call('GET', '/api/admin/permission', { role: 'ADMIN' })
+        const total = (r.data || []).reduce((n, g) => n + (g.perms || []).length, 0)
+        if (r.status === 200) {
+          notes.push(`权限目录：${(r.data || []).length} 个模块 / ${total} 条权限码`)
+        }
+        return r
+      },
+    },
+    {
+      g: '角色与权限',
+      m: 'POST',
+      p: '/api/admin/role',
+      desc: '新建角色（编码重复 → 400；编码不可改）',
+      role: 'ADMIN',
+      deny: 'SECRETARY',
+      run: async () => {
+        // 幂等：上一轮残留同名角色时先删（角色没有"查询后按名删除"以外的清理途径）
+        const list = await call('GET', '/api/admin/role', { role: 'ADMIN' })
+        const stale = (list.data || []).find((x) => x.roleCode === TEST_ROLE_CODE)
+        if (stale) await call('DELETE', `/api/admin/role/${stale.id}`, { role: 'ADMIN' })
+        const r = await call('POST', '/api/admin/role', {
+          role: 'ADMIN',
+          body: { roleCode: TEST_ROLE_CODE, roleName: '[IT] 联调角色', sort: 99 },
+        })
+        // 响应体是**裸数字 id**（OpenAPI ApiResponseLong），不是 {id: N} 对象——
+        // API.md 曾写 {id}，已按实现更正
+        if (r.status === 200 && typeof r.data === 'number') fx.testRoleId = r.data
+        return r
+      },
+    },
+    {
+      g: '角色与权限',
+      m: 'PUT',
+      p: '/api/admin/role/{id}',
+      desc: '编辑角色（编码不可改，仅名称与排序）',
+      role: 'ADMIN',
+      deny: 'SECRETARY',
+      run: () => {
+        if (!fx.testRoleId) return Promise.resolve(noFixture('无夹具角色（新建角色用例未通过）'))
+        return call('PUT', `/api/admin/role/${fx.testRoleId}`, {
+          role: 'ADMIN',
+          body: { roleName: '[IT] 联调角色（已改名）', sort: 98 },
+        })
+      },
+    },
+    {
+      g: '角色与权限',
+      m: 'PUT',
+      p: '/api/admin/role/{id}/permissions',
+      desc: '角色-权限全量覆盖（ADMIN 角色不可改 → 400）',
+      role: 'ADMIN',
+      deny: 'SECRETARY',
+      run: async () => {
+        if (!fx.testRoleId) return noFixture('无夹具角色（新建角色用例未通过）')
+        // 全量覆盖为 2 条只读权限：夹具角色无任何账号绑定，赋权不影响任何人
+        const r = await call('PUT', `/api/admin/role/${fx.testRoleId}/permissions`, {
+          role: 'ADMIN',
+          body: { permCodes: ['audit:log:view', 'semester:window:view'] },
+        })
+        // 回读校验：赋权是否真的落库
+        if (r.status === 200) {
+          const list = await call('GET', '/api/admin/role', { role: 'ADMIN' })
+          const found = (list.data || []).find((x) => x.id === fx.testRoleId)
+          const got = (found?.permCodes || []).slice().sort().join(',')
+          if (got !== 'audit:log:view,semester:window:view') {
+            return { status: 500, code: 'ASSERT_FAILED', message: `赋权回读不一致: ${got}` }
+          }
+        }
+        return r
+      },
+    },
+    {
+      g: '角色与权限',
+      m: 'DELETE',
+      p: '/api/admin/role/{id}',
+      desc: '删除角色（内置 → 400；有账号绑定 → 409）',
+      role: 'ADMIN',
+      deny: 'SECRETARY',
+      run: () => {
+        if (!fx.testRoleId) return Promise.resolve(noFixture('无夹具角色（新建角色用例未通过）'))
+        // 删掉夹具角色，使下一轮运行从干净状态开始
+        return call('DELETE', `/api/admin/role/${fx.testRoleId}`, { role: 'ADMIN' })
+      },
+    },
+    {
+      g: '角色与权限',
+      m: 'PUT',
+      p: '/api/admin/user/{id}/roles',
+      desc: '账号角色全量覆盖（role_version+1 + 撤销 refresh，强制重新登录）',
+      role: 'ADMIN',
+      deny: 'TEACHER',
+      run: async () => {
+        if (!fx.roleTestUserId) return noFixture('无角色变更夹具账号')
+        const r = await call('PUT', `/api/admin/user/${fx.roleTestUserId}/roles`, {
+          role: 'ADMIN',
+          body: { roleCodes: ['TEACHER', 'SECRETARY'] },
+        })
+        // 恢复原角色，保证可重复执行（该账号不承载其他会话，被踢下线无副作用）
+        if (r.status === 200) {
+          await call('PUT', `/api/admin/user/${fx.roleTestUserId}/roles`, {
+            role: 'ADMIN',
+            body: { roleCodes: ['TEACHER'] },
+          })
+        }
+        return r
+      },
+    },
+
     /* ---------- 账号管理（6） ---------- */
     {
       g: '账号管理',
@@ -1364,6 +1609,28 @@ function endpoints() {
           'ADMIN',
           'teacher-import.xlsx',
         ),
+    },
+    {
+      g: '账号管理',
+      m: 'POST',
+      p: '/api/admin/user/import/preview?role=teacher&semesterId={semesterId}',
+      desc: '名单导入预览（V1.0.7：只读不落库，返回班级人数变动与新增账号数）',
+      role: 'ADMIN',
+      deny: 'TEACHER',
+      run: async () => {
+        const r = await uploadFile(
+          'POST',
+          `/api/admin/user/import/preview?role=teacher&semesterId=${sem()}`,
+          'ADMIN',
+          'teacher-import.xlsx',
+        )
+        if (r.status === 200 && r.data) {
+          notes.push(
+            `导入预览：newUserCount=${r.data.newUserCount}，classSizeDiffs=${(r.data.classSizeDiffs || []).length} 项，disableEstimate=${r.data.disableEstimate}`,
+          )
+        }
+        return r
+      },
     },
     {
       g: '账号管理',
@@ -1440,6 +1707,102 @@ function endpoints() {
       role: 'SECRETARY',
       deny: 'TEACHER',
       run: () => call('GET', '/api/secretary/order-forms?page=1&size=5', { role: 'SECRETARY' }),
+    },
+    {
+      g: '教师征订',
+      m: 'GET',
+      p: '/api/teacher/order-forms/{id}',
+      desc: '教师：本人征订单详情（BE-3，修复线上「点明细必然 403」）',
+      role: 'IT9001',
+      // 教师只持 order:form:view:self：用学生探越权（学生连该权限码都没有）
+      deny: 'STUDENT',
+      run: async () => {
+        if (!fx.formId) return noFixture('无征订单夹具')
+        // 必须**接住返回值**：sessionForFixtureTeacher 内部可能在 currentRole 不是 TEACHER
+        // 时调 switch-role 换新令牌，只调用不赋值会继续用旧会话 → 403 FORBIDDEN
+        sessions.IT9001 = await sessionForFixtureTeacher('IT9001', 'It9001@pass')
+        return call('GET', `/api/teacher/order-forms/${fx.formId}`, { role: 'IT9001' })
+      },
+    },
+    {
+      g: '教师征订',
+      m: 'GET',
+      p: '/api/secretary/order-forms/{id}',
+      desc: '秘书：本院征订单详情（BE-3，修复线上「查看明细必然 403」）',
+      // 端点以 SECRETARY 身份调用；同院教师 IT9005 在 run 内部先造一张表单出来
+      role: 'SECRETARY',
+      deny: 'TEACHER',
+      run: async () => {
+        if (!fx.secTeacherId) return noFixture('无同院夹具教师')
+        // 同院教师先提交一张表单，再由秘书读它——canAccessForm 比的是
+        // 「秘书学院 == 教师学院」（都取 user_semester_profile），两者同在计算机学院
+        sessions.IT9005 = await sessionForFixtureTeacher('IT9005', 'It9005@pass', fx.secTeacherId)
+        const sub = await call('POST', '/api/teacher/order-form/submit', {
+          role: 'IT9005',
+          body: {
+            items: [
+              {
+                courseId: fx.courseId,
+                classId: fx.csClassAId,
+                textbookId: fx.textbookId,
+                quantity: 1,
+              },
+            ],
+          },
+        })
+        if (sub.status !== 200) {
+          return noFixture(`同院教师提交失败: ${sub.status} ${sub.code} ${sub.message}`)
+        }
+        const formId = sub.data?.id
+        if (!formId) return noFixture('提交未返回表单 id')
+        // 用种子秘书 800101（计算机学院）读它
+        return call('GET', `/api/secretary/order-forms/${formId}`, { role: 'SECRETARY' })
+      },
+    },
+    {
+      g: '教师征订',
+      m: 'POST',
+      p: '/api/teacher/order-form/withdraw',
+      desc: '教师主动撤回（BE-4：pending_review → draft；非待审核 → 409 分档文案）',
+      role: 'IT9001',
+      deny: 'STUDENT',
+      /**
+       * 窗口关闭的环境下先提交就会 409 WINDOW_CLOSED，撤回随之 409——这是**正确的**
+       * 状态机行为，不该判失败。故接受 200/409 两种业务码；200 时额外断言状态与
+       * `withdrawnAt` 真的落了库（撤回后必须回到可编辑的 draft）。
+       */
+      expectCode: ['0', 'STATE_CONFLICT', 'WINDOW_CLOSED'],
+      expectNote: '窗口开放 → 200（并断言 status=draft 且 withdrawnAt 非空）；窗口关闭 → 如实 409',
+      run: async () => {
+        sessions.IT9001 = await sessionForFixtureTeacher('IT9001', 'It9001@pass')
+        // 先提交一次把状态推到 pending_review，再撤回 → 走通成功路径
+        const items = [
+          { courseId: fx.courseId, classId: fx.classId, textbookId: fx.textbookId, quantity: 1 },
+        ]
+        const sub = await call('POST', '/api/teacher/order-form/submit', {
+          role: 'IT9001',
+          body: { items },
+        })
+        if (sub.status !== 200) {
+          // 窗口非开放 / 状态不允许：撤回必然 409，如实返回（由 expectCode 判为通过）
+          return call('POST', '/api/teacher/order-form/withdraw', { role: 'IT9001' })
+        }
+        const r = await call('POST', '/api/teacher/order-form/withdraw', { role: 'IT9001' })
+        // 撤回后状态应为 draft 且 withdrawnAt 非空；不符则显式判失败
+        if (r.status === 200 && (r.data?.status !== 'draft' || !r.data?.withdrawnAt)) {
+          return {
+            status: 500,
+            code: 'ASSERT_FAILED',
+            message: `撤回后状态/时间不符: status=${r.data?.status} withdrawnAt=${r.data?.withdrawnAt}`,
+          }
+        }
+        if (r.status === 200) {
+          notes.push(
+            `撤回链路：提交 → 撤回 → status=${r.data.status}，withdrawnAt=${r.data.withdrawnAt}`,
+          )
+        }
+        return r
+      },
     },
     {
       g: '教师征订',
@@ -1607,7 +1970,7 @@ function endpoints() {
       g: '异动',
       m: 'POST',
       p: '/api/secretary/change/import',
-      desc: '秘书 Excel 批量 → {batchId,batchNo}',
+      desc: '秘书 Excel 批量 → {batchId}（BE-7b 异步批次）',
       role: 'SECRETARY',
       // 注意：教师同样持有 change:request:submit，所以越权探针要用 STUDENT（无该权限码）
       deny: 'STUDENT',
@@ -1619,7 +1982,13 @@ function endpoints() {
           'SECRETARY',
           'change-import.xlsx',
         )
-        if (r.status === 200 && r.data?.batchNo) fx.changeBatchNo = r.data.batchNo
+        // BE-7b 起响应体只有 {batchId}。batchNo 必须轮询批次详情才能拿到——
+        // 此前直接读 r.data.batchNo（同步时代的字段）恒为 undefined，
+        // 导致 /admin/change/batch/review 的 happy path 静默走 NO_FIXTURE 被 SKIP。
+        if (r.status === 200 && r.data?.batchId) {
+          const batch = await waitBatch(r.data.batchId)
+          if (batch?.batchNo) fx.changeBatchNo = batch.batchNo
+        }
         return r
       },
     },
@@ -1638,6 +2007,37 @@ function endpoints() {
       desc: '提交端目标归属选项（仅 id+名称）',
       role: 'TEACHER',
       deny: 'STUDENT',
+    },
+    {
+      g: '异动',
+      m: 'GET',
+      p: '/api/secretary/change/template',
+      desc: '异动名单导入模板下载（BE-7c：6 列，第 2 列「异动对象」/第 6 列「异动类型」）',
+      role: 'SECRETARY',
+      deny: 'STUDENT',
+      run: async () => {
+        const r = await call('GET', '/api/secretary/change/template', { role: 'SECRETARY' })
+        // 模板是 xlsx 流：校验 PK 魔数 + 6 列表头——表头错列会让整批导入错位
+        if (r.status === 200) {
+          const raw = await fetchBytes('GET', '/api/secretary/change/template', 'SECRETARY')
+          const isZip = raw.buf[0] === 0x50 && raw.buf[1] === 0x4b
+          if (!isZip) {
+            return { status: 500, code: 'ASSERT_FAILED', message: '模板不是 xlsx（无 PK 魔数）' }
+          }
+          const header = readXlsxHeaders(raw.buf)
+          if (header && header.join('|') !== CHANGE_TEMPLATE_HEADERS.join('|')) {
+            return {
+              status: 500,
+              code: 'ASSERT_FAILED',
+              message: `模板表头不符: ${header.join('|')}`,
+            }
+          }
+          notes.push(
+            `异动模板：${raw.buf.length}B，表头 ${(header || []).join(' / ') || '(未解析)'}`,
+          )
+        }
+        return r
+      },
     },
     {
       g: '异动',
@@ -1915,6 +2315,59 @@ function endpoints() {
         return call('GET', `/api/admin/notice/tasks/${fx.noticeTaskId}/failures?page=1&size=5`, {
           role: 'ADMIN',
         })
+      },
+    },
+    {
+      g: '通知',
+      m: 'POST',
+      p: '/api/admin/notice/tasks/{id}/send-now',
+      desc: '立即发送一轮（BE-5b：不等调度周期；窗口非开放 → 409 WINDOW_CLOSED）',
+      role: 'ADMIN',
+      deny: 'TEACHER',
+      run: () => {
+        if (!fx.noticeTaskId) return Promise.resolve(noFixture('无通知任务'))
+        return call('POST', `/api/admin/notice/tasks/${fx.noticeTaskId}/send-now`, {
+          role: 'ADMIN',
+        })
+      },
+    },
+    {
+      g: '通知',
+      m: 'GET',
+      p: '/api/notice/subscribe-config',
+      desc: '订阅配置下发（BE-5e：登录即可读；模板未配置时 subscribeTemplateId=null）',
+      role: 'STUDENT',
+      deny: null,
+      run: async () => {
+        const r = await call('GET', '/api/notice/subscribe-config', { role: 'STUDENT' })
+        if (r.status === 200) {
+          notes.push(
+            `订阅配置：subscribeTemplateId=${'subscribeTemplateId' in (r.data || {}) ? JSON.stringify(r.data.subscribeTemplateId) : '(键省略=未配置)'}，popupQueueMax=${r.data?.popupQueueMax}`,
+          )
+        }
+        return r
+      },
+    },
+    {
+      g: '通知',
+      m: 'POST',
+      p: '/api/notice/confirm-by-entry',
+      desc: '进入选书页即确认（BE-5g：幂等，返回本次新确认数）',
+      role: 'STUDENT',
+      deny: null,
+      run: async () => {
+        const first = await call('POST', '/api/notice/confirm-by-entry', { role: 'STUDENT' })
+        // 幂等性断言：第二次调用必须仍 200（已确认的任务不再重复记录）
+        const second = await call('POST', '/api/notice/confirm-by-entry', { role: 'STUDENT' })
+        if (first.status !== 200 || second.status !== 200) return second
+        if ((second.data?.confirmed ?? -1) !== 0) {
+          return {
+            status: 500,
+            code: 'ASSERT_FAILED',
+            message: `confirm-by-entry 非幂等：第二次 confirmed=${second.data?.confirmed}`,
+          }
+        }
+        return first
       },
     },
 
@@ -2658,11 +3111,11 @@ async function scenarioPassPath() {
   )
 }
 
-async function sessionForFixtureTeacher(userNo, newPassword) {
+async function sessionForFixtureTeacher(userNo, newPassword, userId = fx.userA?.id) {
   const login = await loginRaw(userNo, newPassword)
   if (login.status !== 200) {
     // 口令轮换过：重置 + 首登改密
-    await call('PUT', `/api/admin/user/${fx.userA.id}/reset-password`, { role: 'ADMIN' })
+    await call('PUT', `/api/admin/user/${userId}/reset-password`, { role: 'ADMIN' })
     const fresh = await loginRaw(userNo, userNo)
     if (fresh.status !== 200) throw new Error(`夹具教师登录失败: ${fresh.code}`)
     const token = fresh.data.accessToken
@@ -2704,12 +3157,111 @@ async function ensureTeacherRole(session) {
   return session
 }
 
+/** 构造 NO_FIXTURE 结果（缺夹具时把该探针标 SKIP 而不是 FAIL） */
+const noFixture = (message) => ({ status: 0, code: 'NO_FIXTURE', message })
+
+/**
+ * 把夹具账号的角色**复位**为期望集合（幂等）。
+ * 注意副作用：后端会 role_version+1 并撤销该账号全部 refresh token，
+ * 因此必须在建立任何夹具会话之前调用，否则会把正在用的会话踢下线。
+ */
+async function normalizeFixtureRoles(userId, roleCodes) {
+  if (!userId) return
+  const r = await call('PUT', `/api/admin/user/${userId}/roles`, {
+    role: 'ADMIN',
+    body: { roleCodes },
+  })
+  if (r.status !== 200) {
+    console.warn(`  ⚠ 夹具账号角色复位失败 user=${userId}: ${r.code} ${r.message}`)
+  }
+}
+
+/**
+ * 极简 ZIP 条目读取：xlsx 本质是 ZIP，这里按**中央目录**定位条目后解压。
+ *
+ * 必须走中央目录而不是顺序扫本地文件头：POI 写出的条目带 data descriptor
+ * （本地头 flags bit3 = 0x8），本地头里的 compSize 恒为 0，真实大小只在中央目录里。
+ * 读不到返回 null，由调用方按「未解析」处理而不是判失败。
+ */
+function readZipEntry(buf, name) {
+  // 1) 从尾部向前找 EOCD（PK\x05\x06），注释最长 65535 字节
+  const eocdMin = Math.max(0, buf.length - 65557)
+  let eocd = -1
+  for (let i = buf.length - 22; i >= eocdMin; i -= 1) {
+    if (buf[i] === 0x50 && buf[i + 1] === 0x4b && buf[i + 2] === 0x05 && buf[i + 3] === 0x06) {
+      eocd = i
+      break
+    }
+  }
+  if (eocd < 0) return null
+  const entryCount = buf.readUInt16LE(eocd + 10)
+  let p = buf.readUInt32LE(eocd + 16)
+  const target = Buffer.from(name, 'utf8')
+
+  // 2) 遍历中央目录（PK\x01\x02）找目标条目
+  for (let n = 0; n < entryCount && p + 46 <= buf.length; n += 1) {
+    const isCentral =
+      buf[p] === 0x50 && buf[p + 1] === 0x4b && buf[p + 2] === 0x01 && buf[p + 3] === 0x02
+    if (!isCentral) return null
+    const method = buf.readUInt16LE(p + 10)
+    const compSize = buf.readUInt32LE(p + 20)
+    const nameLen = buf.readUInt16LE(p + 28)
+    const extraLen = buf.readUInt16LE(p + 30)
+    const commentLen = buf.readUInt16LE(p + 32)
+    const localOffset = buf.readUInt32LE(p + 42)
+    const entryName = buf.subarray(p + 46, p + 46 + nameLen)
+    if (entryName.equals(target)) {
+      // 本地头里的 nameLen/extraLen 与中央目录未必相同，必须重新读
+      const lNameLen = buf.readUInt16LE(localOffset + 26)
+      const lExtraLen = buf.readUInt16LE(localOffset + 28)
+      const dataStart = localOffset + 30 + lNameLen + lExtraLen
+      const raw = buf.subarray(dataStart, dataStart + compSize)
+      try {
+        return method === 0 ? raw : inflateRawSync(raw)
+      } catch {
+        return null
+      }
+    }
+    p += 46 + nameLen + extraLen + commentLen
+  }
+  return null
+}
+
+/**
+ * 读 xlsx 首行表头。POI 写出的是 `inlineStr` 单元格（不是 sharedStrings），
+ * 故直接扫 sheet1.xml 里的 `<t>…</t>`。
+ */
+function readXlsxHeaders(buf) {
+  const sheet = readZipEntry(buf, 'xl/worksheets/sheet1.xml')
+  if (!sheet) return null
+  const xml = sheet.toString('utf8')
+  const out = []
+  const re = /<t[^>]*>([^<]*)<\/t>/g
+  let m
+  while ((m = re.exec(xml)) !== null) out.push(m[1])
+  return out
+}
+
+/** 取原始字节（用于校验文件流的魔数与内容；call() 只留字节数不留内容） */
+async function fetchBytes(method, path, role) {
+  const token = role ? sessions[role]?.accessToken : undefined
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  return {
+    status: res.status,
+    contentType: res.headers.get('content-type') || '',
+    buf: Buffer.from(await res.arrayBuffer()),
+  }
+}
+
 /* ============================================================================
  * 报告
  * ==========================================================================*/
 function buildMarkdown(meta) {
   const lines = []
-  lines.push('# 全接口联调测试报告（95 端点 · 真实 HTTP + 真实 MySQL）')
+  lines.push('# 全接口联调测试报告（111 端点 · 真实 HTTP + 真实 MySQL）')
   lines.push('')
   lines.push(`> 执行时间：${meta.time} ｜ 目标：\`${BASE}\` ｜ HTTP 调用：${meta.calls} 次`)
   lines.push(

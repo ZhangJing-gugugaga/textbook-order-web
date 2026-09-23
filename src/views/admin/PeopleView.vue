@@ -11,8 +11,10 @@ import PermButton from '@/components/PermButton.vue'
 import ServerTable from '@/components/ServerTable.vue'
 import { useWindowStore } from '@/stores/window'
 import {
+  CHANGE_REASON_LABELS,
+  CHANGE_REASON_TYPES,
   CHANGE_STATUS_META,
-  CHANGE_TYPE_LABELS,
+  CHANGE_TARGET_LABELS,
   COPY,
   PERMISSIONS,
   ROLE_LABELS,
@@ -54,7 +56,7 @@ function searchPeople() {
 }
 
 /* ---------------- 异动审批工作台 ---------------- */
-const changeFilters = reactive({ status: 'pending_review', batchNo: '' })
+const changeFilters = reactive({ status: 'pending_review', batchNo: '', changeType: '' })
 const changeTableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
 const selected = ref<ChangeRequestListItem | null>(null)
 const detailVisible = ref(false)
@@ -65,11 +67,24 @@ const batchRejectVisible = ref(false)
 const batchRejectReason = ref('')
 const batchAction = ref<ChangeRequestListItem | null>(null)
 
+/** 异动类型下拉项（转专业/留级/专升本/其他）+ 「未分类」（历史数据 change_type 为 NULL） */
+const changeReasonOptions = [
+  ...Object.entries(CHANGE_REASON_TYPES).map(([value, label]) => ({ value, label })),
+  { value: 'UNCLASSIFIED', label: '未分类' },
+]
+
+/** 异动类型展示文案；入参收 `unknown` 的理由同 ChangeRequestsView.reasonText */
+const changeReasonText = (raw: unknown) => {
+  const row = raw as ChangeRequestListItem
+  return CHANGE_REASON_LABELS[row.changeType ?? 'UNCLASSIFIED'] ?? '未分类'
+}
+
 /** 筛选条件 → 接口参数（空串不下发），分页由 ServerTable 注入 */
 function fetchChangesPage({ page, size }: { page: number; size: number }) {
   return changeApi.page({
     status: changeFilters.status || undefined,
     batchNo: changeFilters.batchNo || undefined,
+    changeType: changeFilters.changeType || undefined,
     page,
     size,
   })
@@ -354,6 +369,21 @@ async function uploadPeopleFile(file: File) {
             <el-option label="已通过" value="approved" />
             <el-option label="已驳回" value="rejected" />
           </el-select>
+          <el-select
+            v-model="changeFilters.changeType"
+            clearable
+            placeholder="全部异动类型"
+            style="width: 170px"
+            data-testid="people-change-reason-filter"
+            @change="searchChanges"
+          >
+            <el-option
+              v-for="item in changeReasonOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
           <el-input
             v-model="changeFilters.batchNo"
             placeholder="批次号"
@@ -371,8 +401,13 @@ async function uploadPeopleFile(file: File) {
           <el-table-column prop="targetUserName" label="姓名" width="110">
             <template #default="{ row }">{{ row.targetUserName || '—' }}</template>
           </el-table-column>
-          <el-table-column label="异动类型" width="120">
-            <template #default="{ row }">{{ CHANGE_TYPE_LABELS[row.type] || row.type }}</template>
+          <el-table-column label="异动对象" width="110">
+            <template #default="{ row }">{{ CHANGE_TARGET_LABELS[row.type] || row.type }}</template>
+          </el-table-column>
+          <el-table-column label="异动类型" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" type="info">{{ changeReasonText(row) }}</el-tag>
+            </template>
           </el-table-column>
           <el-table-column label="当前归属" min-width="180">
             <template #default="{ row }">
@@ -447,8 +482,11 @@ async function uploadPeopleFile(file: File) {
           <el-descriptions-item label="姓名">
             {{ selected.targetUserName || '—' }}
           </el-descriptions-item>
+          <el-descriptions-item label="异动对象">
+            {{ CHANGE_TARGET_LABELS[selected.type] || selected.type }}
+          </el-descriptions-item>
           <el-descriptions-item label="异动类型">
-            {{ CHANGE_TYPE_LABELS[selected.type] || selected.type }}
+            {{ changeReasonText(selected) }}
           </el-descriptions-item>
           <el-descriptions-item label="申请人">
             {{ selected.applicantName || '—' }}

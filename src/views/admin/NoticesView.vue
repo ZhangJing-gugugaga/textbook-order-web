@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import type { FormInstance } from 'element-plus'
 import { noticeApi } from '@/api/notice'
+import { semesterApi } from '@/api/semester'
 import { exportApi } from '@/api/exportTask'
 import ExportButton from '@/components/ExportButton.vue'
 import PermButton from '@/components/PermButton.vue'
@@ -11,17 +12,28 @@ import {
   PERMISSIONS,
   ROLE_LABELS,
   ROLES,
+  SEMESTER_ACTIVE_STATUS,
   SEND_STATUS,
 } from '@/utils/constants'
 import { asRow } from '@/utils/table'
 import { validateForm } from '@/utils/validate'
 import { formatDateTime } from '@/utils/format'
-import type { NoticeFailure, NoticeProgress, NoticeTask } from '@/types'
+import type { NoticeFailure, NoticeProgress, NoticeTask, Semester } from '@/types'
 
 /**
  * 通知管理（PRD 教材室-通知管理 / API.md §3.11）：
  * 手动建通知任务（同学期仅 1 个 active，重复创建 → 409）；系统自动任务（窗口变更）只读展示；
  * 进度（sent/unauthorized/failed/confirmed）与失败名单（线下兜底）可查。
+ *
+ * 2026-09-23（FE-W4）补齐三处与后端能力脱节的交互：
+ *  1) **学期筛选**——`GET /admin/notice/tasks` 支持 `semesterId`（缺省 active 学期），
+ *     归档学期的任务仍可查（BE-5d：记录已迁 `notice_record_history`，进度/导出走 UNION）；
+ *  2) **立即发送**——`POST .../send-now`（BE-5b），不必等每小时调度；
+ *     创建流程也从「只建不发」改为「创建 → 立即发首轮」（原按钮文案「创建并发送」名不副实）；
+ *  3) **按选中任务导出**——此前导出写死 `tasks[0].id`，任务一多就导错对象。
+ *
+ * 「立即发送」失败的处置：**任务创建不回滚**（回滚会让用户重复创建并撞 409），
+ * 只提示可在列表里重试。
  */
 const activeTab = ref<'tasks' | 'create'>('tasks')
 const tasks = ref<NoticeTask[]>([])
@@ -34,10 +46,40 @@ let progressRequestId = 0
 const failures = ref<NoticeFailure[]>([])
 const failuresLoading = ref(false)
 
+/* ---------------- 学期筛选 ---------------- */
+const semesters = ref<Semester[]>([])
+const selectedSemesterId = ref<number | null>(null)
+const semestersLoading = ref(false)
+/** 正在「立即发送」的任务 id（按钮 loading，防连点） */
+const sendingId = ref<number | null>(null)
+
+const semesterLabel = (semester: Semester) =>
+  `${semester.name}（${SEMESTER_ACTIVE_STATUS[semester.activeStatus] ?? semester.activeStatus}）`
+
+async function loadSemesters() {
+  semestersLoading.value = true
+  try {
+    const list = await semesterApi.list()
+    semesters.value = list
+    // 默认选中 active 学期（与后端「缺省 = 当前 active 学期」口径一致）
+    const active = list.find((item) => item.activeStatus === 'active')
+    selectedSemesterId.value = (active ?? list[0])?.id ?? null
+  } catch (error) {
+    semesters.value = []
+    selectedSemesterId.value = null
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
+  } finally {
+    semestersLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   try {
-    tasks.value = await noticeApi.tasks()
+    // 未取到学期 id 时不传参：由后端按 active 学期兜底，避免因学期接口失败而整页空白
+    tasks.value = await noticeApi.tasks(
+      selectedSemesterId.value ? { semesterId: selectedSemesterId.value } : undefined,
+    )
   } catch (error) {
     tasks.value = []
     ElMessage.error((error as Error)?.message || COPY.FAILED)
@@ -46,12 +88,32 @@ async function load() {
   }
 }
 
+/** 切换学期：任务列表与「选中导出对象」一并重置（避免导出到上一个学期的任务） */
+async function onSemesterChange() {
+  selectedTaskId.value = null
+  await load()
+}
+
+async function reloadAll() {
+  await loadSemesters()
+  await load()
+}
+
+/* ---------------- 选中任务（导出对象） ---------------- */
+const selectedTaskId = ref<number | null>(null)
+const selectedTask = computed(() => tasks.value.find((item) => item.id === selectedTaskId.value))
+
+function onCurrentChange(raw: unknown) {
+  selectedTaskId.value = raw ? asRow<NoticeTask>(raw).id : null
+}
+
 /** el-table 行类型为 DefaultRow，此处收窄回业务类型（第三方边界） */
 function sourceLabel(raw: unknown) {
   const task = raw as NoticeTask
   return NOTICE_SOURCE_LABELS[task.source ?? ''] ?? '教材室'
 }
 
+/* ---------------- 进度与失败名单 ---------------- */
 async function openProgress(task: NoticeTask) {
   const current = ++progressRequestId
   currentTask.value = task
@@ -75,6 +137,44 @@ async function openProgress(task: NoticeTask) {
   }
 }
 
+/* ---------------- 立即发送 / 关闭 ---------------- */
+function sendResultText(result: {
+  roundNo: number
+  sent: number
+  unauthorized: number
+  failed: number
+  skipped: number
+  skippedReason?: string
+}) {
+  if (result.skipped > 0) {
+    return `第 ${result.roundNo} 轮已跳过${result.skippedReason ? `：${result.skippedReason}` : ''}`
+  }
+  return `本轮发送完成：成功 ${result.sent} / 未授权 ${result.unauthorized} / 失败 ${result.failed}，第 ${result.roundNo} 轮`
+}
+
+async function sendNow(task: NoticeTask) {
+  try {
+    await ElMessageBox.confirm('将立即向未确认人员发送一轮订阅消息提醒，是否继续？', '立即发送', {
+      type: 'warning',
+      confirmButtonText: '立即发送',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  sendingId.value = task.id
+  try {
+    const result = await noticeApi.sendNow(task.id)
+    ElMessage.success(sendResultText(result))
+    await load()
+  } catch (error) {
+    // 已关闭 / 窗口非开放 等由后端分档文案给出，直接展示
+    ElMessage.error((error as Error)?.message || COPY.FAILED)
+  } finally {
+    sendingId.value = null
+  }
+}
+
 async function closeTask(task: NoticeTask) {
   try {
     await noticeApi.closeTask(task.id)
@@ -85,7 +185,7 @@ async function closeTask(task: NoticeTask) {
   }
 }
 
-/* ---------------- 手动创建 ---------------- */
+/* ---------------- 手动创建（创建 → 立即发首轮） ---------------- */
 const creating = ref(false)
 const createFormRef = ref<FormInstance>()
 const createForm = reactive({ title: '', content: '', targetRoles: ROLES.STUDENT })
@@ -98,17 +198,28 @@ async function submitCreate() {
   if (!(await validateForm(createFormRef.value))) return
   creating.value = true
   try {
-    await noticeApi.createTask({
+    const task = await noticeApi.createTask({
       title: createForm.title,
       content: createForm.content,
       targetRoles: createForm.targetRoles || undefined,
     })
-    ElMessage.success('通知任务已创建，学生端将以阻塞弹窗触达')
+    // 创建成功后立刻发首轮：让「创建并发送」的文案与行为一致（BE-5b）
+    try {
+      const result = await noticeApi.sendNow(task.id)
+      ElMessage.success(
+        `任务已创建并完成首轮发送：成功 ${result.sent} / 未授权 ${result.unauthorized} / 失败 ${result.failed}`,
+      )
+    } catch (error) {
+      // 任务已落库：不回滚，避免用户重复创建撞 409
+      ElMessage.warning(
+        `任务已创建，但首轮发送失败：${(error as Error)?.message || COPY.FAILED}，可在任务列表重试`,
+      )
+    }
     activeTab.value = 'tasks'
     createForm.title = ''
     createForm.content = ''
     createForm.targetRoles = ROLES.STUDENT
-    await load()
+    await reloadAll()
   } catch (error) {
     ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
@@ -119,7 +230,7 @@ async function submitCreate() {
 const progressPct = (value: number | undefined, total: number) =>
   total > 0 ? Math.round(((value ?? 0) / total) * 100) : 0
 
-onMounted(load)
+onMounted(reloadAll)
 </script>
 
 <template>
@@ -127,19 +238,52 @@ onMounted(load)
     <el-tabs v-model="activeTab">
       <el-tab-pane label="通知任务" name="tasks">
         <div class="flex-between mb-16">
-          <span class="text-muted">
-            系统自动任务（窗口变更）只读展示；「未授权」= 未确认者（一次性订阅一次授权一条）。
-          </span>
+          <div class="notice-filter">
+            <el-select
+              v-model="selectedSemesterId"
+              v-loading="semestersLoading"
+              placeholder="选择学期"
+              style="width: 260px"
+              data-testid="notice-semester-select"
+              @change="onSemesterChange"
+            >
+              <el-option
+                v-for="item in semesters"
+                :key="item.id"
+                :label="semesterLabel(item)"
+                :value="item.id"
+              />
+            </el-select>
+            <span class="text-muted">
+              系统自动任务（窗口变更）只读展示；「未授权」= 未确认者（一次性订阅一次授权一条）。
+            </span>
+          </div>
           <ExportButton
-            v-if="tasks.length"
             name="通知汇总"
             type="info"
             :code="PERMISSIONS.EXPORT_NOTICE"
-            :exporter="() => exportApi.notice({ taskId: tasks[0].id })"
+            :disabled="!selectedTaskId"
+            :exporter="() => exportApi.notice({ taskId: selectedTaskId! })"
           />
         </div>
 
-        <el-table v-loading="loading" :data="tasks" border stripe>
+        <el-alert v-if="selectedTask" class="mb-16" type="info" :closable="false" show-icon>
+          <template #title>
+            导出对象：任务 #{{ selectedTask.id }}「{{
+              selectedTask.title
+            }}」（在表格中点击行可切换）
+          </template>
+        </el-alert>
+
+        <el-table
+          v-loading="loading"
+          :data="tasks"
+          border
+          stripe
+          highlight-current-row
+          data-testid="notice-task-table"
+          @current-change="onCurrentChange"
+        >
           <el-table-column prop="id" label="任务号" width="90" />
           <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
           <el-table-column label="来源" width="150">
@@ -170,12 +314,24 @@ onMounted(load)
           <el-table-column label="创建时间" width="170">
             <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="290" fixed="right">
             <template #default="{ row }">
               <div class="app-table-actions">
                 <el-button size="small" text @click="openProgress(asRow<NoticeTask>(row))">
                   进度与失败名单
                 </el-button>
+                <PermButton
+                  v-if="row.status === 'active'"
+                  :code="PERMISSIONS.NOTICE_TASK_MANAGE"
+                  size="small"
+                  type="primary"
+                  text
+                  :loading="sendingId === row.id"
+                  data-testid="notice-send-now"
+                  @click="sendNow(asRow<NoticeTask>(row))"
+                >
+                  立即发送
+                </PermButton>
                 <PermButton
                   v-if="row.status === 'active'"
                   :code="PERMISSIONS.NOTICE_TASK_MANAGE"
@@ -232,9 +388,10 @@ onMounted(load)
               :code="PERMISSIONS.NOTICE_TASK_MANAGE"
               type="primary"
               :loading="creating"
+              data-testid="notice-create-submit"
               @click="submitCreate"
             >
-              创建并发送
+              创建并立即发送
             </PermButton>
           </el-form-item>
         </el-form>
@@ -310,3 +467,13 @@ onMounted(load)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+/* 学期下拉与说明文字同一行；说明文字在窄屏下允许换行 */
+.notice-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+</style>

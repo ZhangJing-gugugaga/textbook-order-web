@@ -2,7 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { studentOrderApi } from '@/api/studentOrder'
+import { noticeApi } from '@/api/notice'
 import { useWindowStore } from '@/stores/window'
+import { useNoticeStore } from '@/stores/notice'
 import { useConfigStore } from '@/stores/config'
 import { ApiError } from '@/api/http'
 import { CODE } from '@/utils/constants'
@@ -22,6 +24,7 @@ interface PickRow extends StudentBook {
  * 提交确认弹窗底部固定小字「价格和版本以最终出版单位供应为准」。
  */
 const windowStore = useWindowStore()
+const noticeStore = useNoticeStore()
 const config = useConfigStore()
 
 const rows = ref<PickRow[]>([])
@@ -117,11 +120,30 @@ async function submit() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   void windowStore.fetch()
   void config.load()
-  void load()
+  await load()
+  await confirmByEntry()
 })
+
+/**
+ * 进入选书页即确认收到（BE-5g / 决策 FE-W6）。
+ *
+ * 语义：弹窗是主触达；本项只兜底「弹窗未出现或降级」时学生其实已经进入选书页的场景。
+ * 因此**失败静默**（不弹错、不阻塞页面），且必须在清单加载成功后才调用——
+ * 清单都没出来就记「已收到」不符合语义。接口本身幂等，重复进入不会重复记录。
+ */
+async function confirmByEntry() {
+  if (!rows.value.length) return
+  try {
+    const result = await noticeApi.confirmByEntry()
+    // 有任务被本次入口确认 → 刷新未确认队列，让被确认的任务从阻塞弹窗队列消失
+    if (result?.confirmed) await noticeStore.fetchUnconfirmed()
+  } catch {
+    // 静默：入口确认是兜底能力，失败不影响选书主流程
+  }
+}
 </script>
 
 <template>

@@ -222,10 +222,31 @@ export const CHANGE_STATUS = {
   rejected: '已驳回',
 } as const
 
-/** 异动类型 */
-export const CHANGE_TYPE_LABELS: Record<string, string> = {
+/**
+ * 异动**对象**（student/teacher）→ 标签。
+ * 命名刻意与下面的「异动类型」区分：本字典表达"给谁异动"，与 `changeType`（转专业/留级/…）不是一回事。
+ * 导入模板第 2 列表头即本语义（原表头「变更类型」易与 `changeType` 混淆，BE-7c 已改为「异动对象」）。
+ */
+export const CHANGE_TARGET_LABELS: Record<string, string> = {
   student: '学生异动',
   teacher: '教师异动',
+}
+
+/**
+ * 异动**类型**（`change_request.change_type`，BE-7a）→ 中文。
+ * 逐条提交与 Excel 导入第 6 列共用同一套取值；后端兼容中文入参、未知值归一为 `OTHER`。
+ */
+export const CHANGE_REASON_TYPES = {
+  MAJOR_TRANSFER: '转专业',
+  GRADE_REPEAT: '留级',
+  UPGRADE: '专升本',
+  OTHER: '其他',
+} as const
+
+/** 展示用字典：历史数据 `change_type` 为 NULL → 「未分类」 */
+export const CHANGE_REASON_LABELS: Record<string, string> = {
+  ...CHANGE_REASON_TYPES,
+  UNCLASSIFIED: '未分类',
 }
 
 /**

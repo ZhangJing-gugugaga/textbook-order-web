@@ -40,11 +40,16 @@ const props = withDefaults(
     progress?: (taskId: number) => Promise<ExportTask>
     /** 一次性授权下载（默认内部端点；供货商传 supplierApi.taskDownload） */
     download?: (taskId: number, token: string, fallbackName?: string) => Promise<FileResult>
+    /**
+     * 禁用（如「先选任务再导出」的通知汇总：未选中任务时不可点）。
+     * 只置灰不隐藏——隐藏会让用户不知道有这个能力。
+     */
+    disabled?: boolean
     type?: 'primary' | 'success' | 'warning' | 'danger' | 'info'
     size?: 'large' | 'default' | 'small'
     text?: boolean
   }>(),
-  { type: 'primary', size: 'default', text: false },
+  { type: 'primary', size: 'default', text: false, disabled: false },
 )
 
 const emit = defineEmits<{ (e: 'done', mode: 'sync' | 'async'): void }>()
@@ -74,7 +79,7 @@ const label = computed(() => {
 })
 
 async function run() {
-  if (running.value) return
+  if (running.value || props.disabled) return
   running.value = true
   try {
     const result = await props.exporter()
@@ -152,9 +157,18 @@ defineExpose({ run })
 
 <template>
   <span v-if="allowed" class="export-button">
-    <el-button :type="type" :size="size" :text="text" :loading="running" @click="run">
-      {{ label }}
-    </el-button>
+    <el-tooltip :disabled="!disabled" content="请先选择要导出的通知任务" placement="top">
+      <el-button
+        :type="type"
+        :size="size"
+        :text="text"
+        :disabled="disabled"
+        :loading="running"
+        @click="run"
+      >
+        {{ label }}
+      </el-button>
+    </el-tooltip>
     <el-alert
       v-if="taskState?.error"
       class="mt-8"

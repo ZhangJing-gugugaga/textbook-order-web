@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { reviewApi } from '@/api/orderForm'
 import { noticeApi } from '@/api/notice'
 import { exportApi } from '@/api/exportTask'
 import { ApiError } from '@/api/http'
-import { orgApi } from '@/api/semester'
+import { orgApi, semesterApi } from '@/api/semester'
 import ExportButton from '@/components/ExportButton.vue'
 import ServerTable from '@/components/ServerTable.vue'
-import { COPY, PERMISSIONS } from '@/utils/constants'
+import { COPY, PERMISSIONS, SEMESTER_ACTIVE_STATUS } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
-import type { College, NoticeTask } from '@/types'
+import type { College, NoticeTask, Semester } from '@/types'
 
 /**
  * 导出中心（PRD 教材室-导出中心 / API.md §3.10）：
@@ -44,18 +44,55 @@ function searchOrders() {
 /* ---------------- 通知汇总 ---------------- */
 const noticeTasks = ref<NoticeTask[]>([])
 const noticeLoading = ref(false)
+const noticeSemesters = ref<Semester[]>([])
+const selectedNoticeSemesterId = ref<number | null>(null)
+/** 导出对象：通知汇总必须显式指定任务，避免「导错对象」 */
+const selectedNoticeTaskId = ref<number | null>(null)
+
+const semesterLabel = (semester: Semester) =>
+  `${semester.name}（${SEMESTER_ACTIVE_STATUS[semester.activeStatus] ?? semester.activeStatus}）`
+
+async function loadNoticeSemesters() {
+  try {
+    const list = await semesterApi.list()
+    noticeSemesters.value = list
+    const active = list.find((item) => item.activeStatus === 'active')
+    selectedNoticeSemesterId.value = (active ?? list[0])?.id ?? null
+  } catch {
+    noticeSemesters.value = []
+    selectedNoticeSemesterId.value = null
+  }
+}
 
 async function loadNotices() {
   noticeLoading.value = true
   try {
-    noticeTasks.value = await noticeApi.tasks()
+    noticeTasks.value = await noticeApi.tasks(
+      selectedNoticeSemesterId.value ? { semesterId: selectedNoticeSemesterId.value } : undefined,
+    )
+    // 默认选中最新任务（列表 id DESC），换学期后同样回落到该学期最新任务
+    selectedNoticeTaskId.value = noticeTasks.value[0]?.id ?? null
   } catch (error) {
     noticeTasks.value = []
+    selectedNoticeTaskId.value = null
     ElMessage.error((error as Error)?.message || COPY.FAILED)
   } finally {
     noticeLoading.value = false
   }
 }
+
+function onNoticeSemesterChange() {
+  selectedNoticeTaskId.value = null
+  void loadNotices()
+}
+
+function onNoticeRowChange(raw: unknown) {
+  selectedNoticeTaskId.value = raw ? (raw as NoticeTask).id : null
+}
+
+const selectedNoticeTask = computed(() =>
+  noticeTasks.value.find((item) => item.id === selectedNoticeTaskId.value),
+)
 
 const exportTypes = [
   {
@@ -75,23 +112,22 @@ const exportTypes = [
   {
     key: 'notice',
     name: '通知汇总',
-    desc: '通知任务各轮发送时间/状态、确认状态/时间，含未授权线下兜底名单',
+    desc: '通知任务各轮发送时间/状态、确认状态/时间、渠道（订阅消息+弹窗 / 仅弹窗），含未授权线下兜底名单',
     code: PERMISSIONS.EXPORT_NOTICE,
     run: () => {
-      if (!noticeTasks.value.length) {
-        ElMessage.warning('本学期暂无通知任务，无法导出通知汇总')
-        return Promise.reject(
-          new ApiError('本学期暂无通知任务，无法导出通知汇总', 'NO_NOTICE_TASK'),
-        )
+      if (!selectedNoticeTaskId.value) {
+        ElMessage.warning('请先选择要导出的通知任务')
+        return Promise.reject(new ApiError('请先选择要导出的通知任务', 'NO_NOTICE_TASK'))
       }
-      return exportApi.notice({ taskId: noticeTasks.value[0].id })
+      return exportApi.notice({ taskId: selectedNoticeTaskId.value })
     },
   },
 ]
 
 onMounted(async () => {
   colleges.value = await orgApi.colleges().catch(() => [])
-  // 征订明细由 ServerTable 自行首屏取数，这里只加载通知任务（导出按钮依赖）
+  // 征订明细由 ServerTable 自行首屏取数，这里只加载通知学期与任务（导出按钮依赖）
+  await loadNoticeSemesters()
   await loadNotices()
 })
 </script>
@@ -120,9 +156,32 @@ onMounted(async () => {
       <div v-for="item in exportTypes" :key="item.key" class="export-card">
         <div class="export-name">{{ item.name }}</div>
         <div class="export-desc">{{ item.desc }}</div>
+        <!-- 通知汇总必须显式选任务：此前写死 tasks[0]，任务一多就导错对象 -->
+        <el-select
+          v-if="item.key === 'notice'"
+          v-model="selectedNoticeTaskId"
+          class="mb-8"
+          placeholder="选择通知任务"
+          size="small"
+          style="width: 100%"
+          data-testid="export-notice-task-select"
+        >
+          <el-option
+            v-for="task in noticeTasks"
+            :key="task.id"
+            :label="`#${task.id} ${task.title}`"
+            :value="task.id"
+          />
+        </el-select>
         <div class="flex-between mt-8">
           <span class="text-muted">服务端裁决同步/异步</span>
-          <ExportButton :name="item.name" :code="item.code" :exporter="item.run" size="small" />
+          <ExportButton
+            :name="item.name"
+            :code="item.code"
+            :exporter="item.run"
+            :disabled="item.key === 'notice' && !selectedNoticeTaskId"
+            size="small"
+          />
         </div>
       </div>
     </div>
@@ -171,7 +230,31 @@ onMounted(async () => {
       </el-tab-pane>
 
       <el-tab-pane label="通知汇总" name="notice">
-        <el-table v-loading="noticeLoading" :data="noticeTasks" border stripe>
+        <div class="app-toolbar">
+          <el-select
+            v-model="selectedNoticeSemesterId"
+            placeholder="选择学期"
+            style="width: 260px"
+            data-testid="export-notice-semester-select"
+            @change="onNoticeSemesterChange"
+          >
+            <el-option
+              v-for="item in noticeSemesters"
+              :key="item.id"
+              :label="semesterLabel(item)"
+              :value="item.id"
+            />
+          </el-select>
+          <span class="text-muted">点击行选择导出对象（与上方卡片下拉联动）</span>
+        </div>
+        <el-table
+          v-loading="noticeLoading"
+          :data="noticeTasks"
+          border
+          stripe
+          highlight-current-row
+          @current-change="onNoticeRowChange"
+        >
           <el-table-column prop="id" label="任务号" width="90" />
           <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
           <el-table-column prop="targetRoles" label="发送对象" width="140" />
@@ -190,6 +273,14 @@ onMounted(async () => {
             <el-empty :description="COPY.EMPTY" :image-size="70" />
           </template>
         </el-table>
+        <el-alert
+          v-if="selectedNoticeTask"
+          class="mt-8"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="`导出对象：任务 #${selectedNoticeTask.id}「${selectedNoticeTask.title}」`"
+        />
       </el-tab-pane>
     </el-tabs>
   </div>
