@@ -39,14 +39,50 @@ const BOOKS: StudentBook[] = [
   } as StudentBook,
 ]
 
-async function mountPage(books: StudentBook[] = BOOKS) {
+async function mountPage(books: StudentBook[] = BOOKS, order: unknown = null) {
   bookList.mockResolvedValue(books)
-  myOrder.mockResolvedValue(null)
+  myOrder.mockResolvedValue(order as never)
   unconfirmed.mockResolvedValue([])
   const wrapper = mount(BookSelectView, { global: { plugins: [ElementPlus] } })
   await flushPromises()
   return wrapper
 }
+
+/** 取每张教材卡片的勾选态与数量（按渲染顺序，与 books 同序） */
+function pickState(wrapper: Awaited<ReturnType<typeof mountPage>>) {
+  const checked = wrapper
+    .findAllComponents({ name: 'ElCheckbox' })
+    .map((c) => c.props('modelValue'))
+  const quantity = wrapper
+    .findAllComponents({ name: 'ElInputNumber' })
+    .map((c) => c.props('modelValue'))
+  return { checked, quantity }
+}
+
+const REQUIRED_BOOK: StudentBook = {
+  textbookId: 1,
+  title: '数据结构',
+  isbn: '9787111128069',
+  price: 45,
+  required: true,
+} as StudentBook
+
+const OPTIONAL_BOOK: StudentBook = {
+  textbookId: 2,
+  title: '算法导论',
+  isbn: '9787111407010',
+  price: 128,
+  required: false,
+} as StudentBook
+
+const DELISTED_REQUIRED_BOOK: StudentBook = {
+  textbookId: 3,
+  title: '已下架必修书',
+  isbn: '9787111111111',
+  price: 60,
+  required: true,
+  delisted: true,
+} as StudentBook
 
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -89,5 +125,48 @@ describe('选书页入口确认（FE-W6）', () => {
     expect(ElMessage.error).not.toHaveBeenCalled()
     // 页面仍渲染教材清单
     expect(wrapper.text()).toContain('数据结构')
+  })
+})
+
+/**
+ * 必修教材默认勾选 1 本（PRD 选书页字段规范 / W-G1）。
+ *
+ * 关键约束：**只在首次进入时预勾**。学生提交过一次之后，整单以回显为准——
+ * 否则「我明明没勾的书被勾上了」会直接导致误提交。
+ */
+describe('必修教材默认勾选（W-G1）', () => {
+  beforeEach(() => {
+    confirmByEntry.mockResolvedValue({ confirmed: 0 })
+  })
+
+  it('首次进入（无已提交单）：必修默认勾选且数量 1，非必修不勾', async () => {
+    const wrapper = await mountPage([REQUIRED_BOOK, OPTIONAL_BOOK], null)
+    const { checked, quantity } = pickState(wrapper)
+    expect(checked).toEqual([true, false])
+    expect(quantity).toEqual([1, 0])
+  })
+
+  it('已提交过的单：整单以回显为准，必修书未在单里就不勾选', async () => {
+    const order = { items: [{ textbookId: OPTIONAL_BOOK.textbookId, quantity: 3 }] }
+    const wrapper = await mountPage([REQUIRED_BOOK, OPTIONAL_BOOK], order)
+    const { checked, quantity } = pickState(wrapper)
+    // 必修书未被勾选（回显优先于预勾），非必修书按回显带出数量
+    expect(checked).toEqual([false, true])
+    expect(quantity).toEqual([0, 3])
+  })
+
+  it('已提交过的单：必修书在单里则按回显数量，不覆盖成 1', async () => {
+    const order = { items: [{ textbookId: REQUIRED_BOOK.textbookId, quantity: 4 }] }
+    const wrapper = await mountPage([REQUIRED_BOOK], order)
+    const { checked, quantity } = pickState(wrapper)
+    expect(checked).toEqual([true])
+    expect(quantity).toEqual([4])
+  })
+
+  it('已下架的必修书不预勾选（不可选，预勾会直接触发 BOOK_DELISTED）', async () => {
+    const wrapper = await mountPage([DELISTED_REQUIRED_BOOK], null)
+    const { checked, quantity } = pickState(wrapper)
+    expect(checked).toEqual([false])
+    expect(quantity).toEqual([0])
   })
 })

@@ -1,12 +1,19 @@
 # 教材征订系统 · Web 端前端技术规格（SPEC）
 
-> 版本 **V1.1.0** · 2026-09-21 · 依据：本仓库 `PRD.md`（V1.1.0）、`02-前端开发计划与决策.md`（v3 复审修订版）、`03-后端开发计划与决策.md`（接口契约基线）
-> 定位：PRD 说「做什么/为什么」，本文说「怎么实现」；里程碑、分工与验收标准见 02 号文档 §9。本文与 02 v3 冲突时，以 02 v3 已锁定决策为准。
+> 版本 **V1.2.0** · 2026-09-23 · 依据：本仓库 `PRD.md`（V1.2.0）、后端 `textbook-order-server/API.md` V1.1.0 + OpenAPI（契约真源）
+> 定位：PRD 说「做什么/为什么」，本文说「怎么实现」；里程碑与验收标准见 02 号文档 §9（该文档已存档，见其头部声明）。
 > 范围：仅 Web 端。小程序端见 `textbook-order-mp` 仓库（任课老师 + 学生，无 admin）。
 >
-> **V1.1.0 说明**：本版按 2026-09-21 企业级评审结论对全文做了与代码对齐的修订——删除 mock 章节、
-> 修正权限码表（改为指向 `src/utils/constants.ts` 的真源）、修正超时值/类型描述/工程结构，
-> 并补入按需引入、E2E、覆盖率门禁、浏览器矩阵与部署手册的落地说明。
+> **契约与口径总则**：接口形状以 `textbook-order-server/API.md` V1.1.0 与 `/v3/api-docs` 为准；
+> 页面行为、数字口径与权限判定以**代码实际行为**为准。本文与任何计划类文档冲突时以代码为准。
+> **V1.1.0 的「与 02 v3 冲突时以 02 为准」规则自本版废止**——02 号文档 v3 的三条已锁定决策
+> （mock 策略 / `v-perm` 指令 / 5000 行同步阈值）已被实现推翻，02 号文档降级为历史存档（见 W-U3）。
+>
+> **V1.2.0 说明**：本版按 `docs/12-前端文档对齐-goal-prompt-20260923.md` 对全文做与代码对齐的修订——
+> 页面 26→28（补 `/audit`、`/roles`）、权限码 37→39、api 模块 12→13（补 `role.ts`）、组件 10→11
+> （补 `OrderFormItemsTable.vue`）、e2e 4→5 文件（后补 FE-W4/W5/W6 专项成 6 文件）、测试数 76/29→158/41、覆盖率阈值→48/44/43/49、
+> 补 `meta.roles` 归属角色门禁、trial base `/textbook/`→`/`、config store 非超管行为、
+> §2 结构清单与实际目录对齐。
 > **以本文与代码不一致时，以代码为准**；发现不一致请直接修本文，不要让它再次分叉。
 
 ---
@@ -36,47 +43,61 @@
 
 ```
 textbook-order-web/
-├─ PRD.md / SPEC.md / 02-前端开发计划与决策.md   # 需求 / 规格 / 计划三件套
+├─ PRD.md / SPEC.md / 02-前端开发计划与决策.md   # 需求 / 规格 / 计划三件套（02 已存档，见其头部）
 ├─ README.md                                     # 开发上手（环境矩阵、测试说明、联调账号）
+├─ .project-state.md                             # 跨会话状态源（功能进度 / 关键决策 / 阻塞项）
 ├─ index.html
 ├─ vite.config.ts                                # base、proxy、按需引入、分包、define
 ├─ vitest.config.ts / playwright.config.ts        # 单测 / E2E 配置
-├─ eslint.config.js / .prettierrc.json / .prettierignore
+├─ eslint.config.js / .prettierrc.json / .prettierignore / .editorconfig
 ├─ postcss.config.mjs                            # autoprefixer（让 browserslist 生效）
 ├─ tsconfig.json
 ├─ .env.example / .env.trial / .env.school        # VITE_BASE / VITE_PROXY_TARGET（无密钥）
 ├─ .github/workflows/ci.yml                      # CI 质量门禁
+├─ prod-csp-check.mjs / prod-ui-check.mjs        # 生产浏览器实测（需真实网络与演示口令，不入 CI）
+├─ scripts/
+│  ├─ api-contract-test.mjs                      # 全量接口契约联调（111 端点 × 314 探针）
+│  ├─ fullchain-web.mjs                          # 12 条业务链路端到端（与契约测试横切面互补）
+│  ├─ seed-demo-data.mjs                         # 演示数据灌入（幂等）
+│  └─ fixtures/                                  # 契约测试夹具（change-import.xlsx 等）
 ├─ docs/
-│  ├─ DEPLOYMENT.md                              # 部署手册（Nginx/安全头/缓存/回滚）
+│  ├─ API-INTEGRATION-REPORT.md                  # 逐端点联调报告（脚本产出）
+│  ├─ CONTRACT-FIX-AND-INTEGRATION-REPORT.md     # 契约修复与联调记录
+│  ├─ DEPLOYMENT.md                              # 部署手册（Caddy/Nginx/安全头/缓存/回滚）
 │  └─ HANDOVER-CHECKLIST.md                      # 移交检查单
-├─ e2e/                                          # Playwright：五角色走查 + 越权矩阵
+├─ e2e/                                          # Playwright：五角色走查 + 越权矩阵 + 真实后端
 │  ├─ fixtures/api.ts                            # 接口桩（按角色返回固定响应）
+│  ├─ fixtures/seedCredentials.ts                # 真实后端种子口令（运行时注入，仓库不落明文）
 │  ├─ landing.spec.ts / auth.spec.ts
 │  ├─ permission.spec.ts / smoke.spec.ts
+│  └─ real-backend.spec.ts                       # E2E_REAL_BACKEND=1 时启用
 ├─ src/
 │  ├─ main.ts / App.vue
 │  ├─ router/
 │  │  ├─ index.ts                                # createWebHistory(BASE_URL)
-│  │  ├─ routes.ts                               # 静态路由表 + meta.permission
-│  │  └─ guards.ts                               # 守卫 + resolveLandingPath()
+│  │  ├─ routes.ts                               # 静态路由表 + meta.permission + meta.roles
+│  │  ├─ guards.ts                               # 守卫 + resolveLandingPath()
+│  │  └─ access.ts                               # canAccessRoute()：权限码 + 归属角色（唯一实现）
 │  ├─ stores/                                    # §7 五个 store
 │  │  ├─ auth.ts / window.ts / notice.ts / task.ts / config.ts
-│  ├─ api/                                       # §6 接口模块（12 个业务模块 + http.ts）
+│  ├─ api/                                       # §6 接口模块（13 个业务模块 + http.ts）
 │  │  ├─ http.ts                                 # axios 单例 + 拦截器 + refresh single-flight
 │  │  ├─ auth.ts / semester.ts / people.ts / textbook.ts / course.ts
 │  │  ├─ orderForm.ts / studentOrder.ts / change.ts / notice.ts
-│  │  └─ exportTask.ts / dashboard.ts / supplier.ts
+│  │  ├─ exportTask.ts / dashboard.ts / supplier.ts / role.ts
 │  ├─ components/                                # §8 组件（页面内显式 import，不全局注册）
 │  │  ├─ PermButton.vue / ServerTable.vue / ImportWizard.vue / ExportButton.vue
 │  │  ├─ WindowBanner.vue / GlobalBlockingNotice.vue / ForceChangePasswordModal.vue
 │  │  ├─ SemesterLifecyclePanel.vue / FieldCheckResult.vue / RoleSwitcher.vue
+│  │  └─ OrderFormItemsTable.vue
 │  ├─ composables/useCountdown.ts                # §8（自带卸载清理）
 │  ├─ layouts/DefaultLayout.vue                  # 侧边栏 + 顶栏 + 内容区
-│  ├─ views/                                     # 26 个页面
+│  ├─ views/                                     # 28 个页面（= routes.ts 命名路由数）
 │  │  ├─ login/ profile/ error/                  # 1 + 1 + 2
-│  │  ├─ admin/                                  # 11：dashboard, accounts, org, semester-window,
+│  │  ├─ admin/                                  # 13：dashboard, accounts, org, semester-window,
 │  │  │                                          #     textbooks, courses, people, review,
-│  │  │                                          #     order-data, export-center, notices
+│  │  │                                          #     order-data, export-center, notices,
+│  │  │                                          #     audit, roles
 │  │  ├─ secretary/                              # 4：college-records, college-export,
 │  │  │                                          #    change-requests, window-status
 │  │  ├─ teacher/                                # 3：my-courses, order-form, my-submissions
@@ -93,7 +114,7 @@ textbook-order-web/
 │     ├─ icons.ts                                # 图标按需注册表
 │     ├─ table.ts                                # el-table 行类型收窄（asRow）
 │     ├─ format.ts / validate.ts
-└─ tests/                                        # unit/ + components/
+└─ tests/                                        # unit/（17 文件）+ components/（11 文件）
 ```
 
 ## 3. 构建与环境（02 §2 · Q13）
@@ -102,11 +123,11 @@ textbook-order-web/
 
 前端只有两项常规配置 + 一项开关，**均不含密钥**：
 
-| 变量                | 含义                           | 默认值                                     |
-| ------------------- | ------------------------------ | ------------------------------------------ |
-| `VITE_BASE`         | 部署子路径（以 `/` 收尾）      | development → `/`；其余模式 → `/textbook/` |
-| `VITE_PROXY_TARGET` | dev/preview 的 `/api` 代理目标 | `http://127.0.0.1:8080`                    |
-| `VITE_SOURCEMAP`    | 置 `1` 时产出 sourcemap        | 未设置（关闭）                             |
+| 变量                | 含义                           | 默认值                                                            |
+| ------------------- | ------------------------------ | ----------------------------------------------------------------- |
+| `VITE_BASE`         | 部署子路径（以 `/` 收尾）      | development → `/`；trial → `/`（子域名根）；school → `/textbook/` |
+| `VITE_PROXY_TARGET` | dev/preview 的 `/api` 代理目标 | `http://127.0.0.1:8080`                                           |
+| `VITE_SOURCEMAP`    | 置 `1` 时产出 sourcemap        | 未设置（关闭）                                                    |
 
 **代码零域名/IP 硬编码**；接口一律相对路径 `/api`（硬约束）。
 
@@ -116,8 +137,12 @@ trial / school 配置入库（无密钥），样例见 `.env.example`。
 | 环境   | mode                  | VITE_BASE                                | 说明                                                                         |
 | ------ | --------------------- | ---------------------------------------- | ---------------------------------------------------------------------------- |
 | local  | `development`（默认） | `/`                                      | `npm run dev` 开箱可用，**无需 env 文件**；`npm run dev:proxy` 走 trial 配置 |
-| trial  | `trial`               | `/textbook/`                             | moonzj.com 子路径，根域已有服务零冲突（`.env.trial`）                        |
-| school | `school`              | `/textbook/`（按校方路径可调，仅改 env） | 移交重部署（`.env.school`）                                                  |
+| trial  | `trial`               | `/`                                      | **独立子域名根路径** `textbooksorder.moonzj.com`（`.env.trial`）             |
+| school | `school`              | `/textbook/`（按校方路径可调，仅改 env） | 移交重部署（`.env.school`）；主域子路径形态                                  |
+
+> **trial 的 base 是 `/` 而不是 `/textbook/`**（2026-09-23 线上实测更正）：生产部署形态是
+> **独立子域名根路径**，不是主域子路径。若改回子路径部署，需同步改 `.env.trial` 与反代配置；
+> `.env.trial` 文件内已写明两种形态的取值。
 
 ### 3.2 部署子路径的单一真源
 
@@ -170,9 +195,9 @@ Nginx 完整配置（含**安全响应头**、缓存分层、history 回退、`/
 
 ### 4.1 权限码真源
 
-**权限码的唯一真源是 `src/utils/constants.ts` 的 `PERMISSIONS`**（后端 `sys_permission` 37 条，
-M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton`、`ExportButton` 全部引用该常量，
-**不再有字面量散落**。下表列出各页面实际使用的权限码：
+**权限码的唯一真源是 `src/utils/constants.ts` 的 `PERMISSIONS`**（后端 `sys_permission` **39 条**，
+M1 契约冻结值 + BE-2 角色管理新增 2 条）。路由 `meta.permission`、侧边栏过滤、`PermButton`、
+`ExportButton` 全部引用该常量，**不再有字面量散落**。下表列出各页面实际使用的权限码：
 
 | 路径             | 页面                            | 角色        | 权限码（真源：constants.ts） |
 | ---------------- | ------------------------------- | ----------- | ---------------------------- |
@@ -190,6 +215,8 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 | /order-data      | 征订数据                        | 超管        | `order:form:view:all`        |
 | /export-center   | 导出中心                        | 超管        | `export:order:create`        |
 | /notices         | 通知管理                        | 超管        | `notice:task:manage`         |
+| /audit           | 审计日志                        | 超管        | `audit:log:view`             |
+| /roles           | 角色管理                        | 超管        | `role:manage`                |
 | /college-records | 本院征订记录                    | 秘书        | `order:form:view:college`    |
 | /college-export  | 本院导出（签字版式）            | 秘书        | `export:signature:create`    |
 | /window-status   | 窗口状态（只读）                | 秘书        | `semester:window:view`       |
@@ -202,24 +229,48 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 | /purchase-list   | 订购清单                        | 供货商      | `supplier:order:view`        |
 | /supplier-export | 清单导出                        | 供货商      | `supplier:order:export`      |
 
+> 上表 27 行（`/403,/404` 合并计一行）= 28 个命名路由去掉 1 行公共兜底合并；与 `routes.ts` 一一对应。
+> 权限码目录共 39 条，其余 12 条不 gate 任何页面（按钮级或页面级已足够），逐码结论见 §4.4。
+
 ### 4.2 守卫流程
 
 `router.beforeEach`：
 
 1. `!auth.ready` → `auth.bootstrap()`（用 refresh token 静默恢复会话），登录后拉 `system_config`；
-2. `to.path === '/login'` 且已登录且未待改密 → `resolveLandingPath(permissions)`；
+2. `to.path === '/login'` 且已登录且未待改密 → `resolveLandingPath(permissions, roles)`；
 3. 未登录 → `/login?redirect=<fullPath>`；
 4. `mustChangePassword` 且非 `/profile` → `/profile?forceChange=1`（不可跳过）；
-5. **`to.path === '/'` → `resolveLandingPath(permissions)`**（见下）；
-6. `meta.permission` 不在 `auth.permissions` 内 → `/403`；
+5. **`to.path === '/'` → `resolveLandingPath(permissions, roles)`**（见下）；
+6. `canAccessRoute(meta, permissions, roles)` 为假 → `/403`（**权限码 + 归属角色双重校验**，见下）；
 7. 放行前拉取窗口状态与未确认通知。
 
 `router.afterEach` 写入 `document.title`（`<页面标题> · 教材征订系统`）。
 
+#### 4.2.1 页面可访问判定（`canAccessRoute`，唯一实现）
+
+守卫、侧边栏菜单、落地页解析三处**共用** `src/router/access.ts` 的 `canAccessRoute()`，
+避免出现「菜单能点、守卫却拦」的两套口径。两条约束**同时**成立才放行，短路顺序为先权限码后角色：
+
+| 顺序 | 约束                               | 说明                                                       |
+| ---- | ---------------------------------- | ---------------------------------------------------------- |
+| 1    | `meta.permission` 在当前身份下持有 | 未声明则不校验（如 `/profile`）                            |
+| 2    | `meta.roles` 与当前身份有交集      | 未声明则不限角色（管理台页面）；声明后超管也不能进别角色页 |
+
+`meta.roles` 的引入背景（2026-09-22 线上缺陷）：超管在后端持有「除供货商外全部」权限，
+其中含教师填报、学生选购、秘书签字版导出等**角色专属**权限。只按权限码过滤，超管侧边栏就会
+冒出「学院秘书 / 任课老师 / 学生」三组别角色的自助页，且点进去都是对超管无意义的页面
+（我的课程为空、选书无班级可归）。故对自助类页面加归属角色约束。
+
+已声明 `meta.roles` 的页面：`/export-center`（`ADMIN`）、`/college-records`、`/college-export`、
+`/window-status`（`SECRETARY`）、`/change-requests`（`SECRETARY` + `TEACHER`）、
+`/my-courses`、`/order-form`、`/my-submissions`（`TEACHER`）、`/book-select`、`/my-orders`（`STUDENT`）、
+`/purchase-list`、`/supplier-export`（`SUPPLIER`）。**未声明**的属管理台页面（如导出中心由后端支持
+「秘书本院 / 教材室全院」两种范围，但该页会无条件拉超管专属数据，故仍限定 `ADMIN`）。
+
 ### 4.3 落地页解析（`resolveLandingPath`）
 
 **根路径 `/` 不做静态 redirect**。静态 `redirect: '/dashboard'` 会让教师/学生/秘书/供货商
-被权限守卫拦到 `/403`（已修复的用户可见缺陷）。落地页由 `resolveLandingPath(permissions)`
+被权限守卫拦到 `/403`（已修复的用户可见缺陷）。落地页由 `resolveLandingPath(permissions, roles)`
 按以下顺序解析，登录、访问根路径、切换身份三处共用同一实现：
 
 | 优先级 | 命中权限                     | 落地页             |
@@ -234,8 +285,8 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 
 ### 4.4 显示层权限的三种控制
 
-1. **路由级**：`meta.permission` + 守卫（§4.2 步骤 6）；
-2. **菜单级**：侧边栏 = 全量路由表按 `permissions` 过滤生成（`DefaultLayout.vue`）；
+1. **路由级**：`canAccessRoute(meta, permissions, roles)` + 守卫（§4.2 步骤 6）；
+2. **菜单级**：侧边栏 = 全量路由表按同一 `canAccessRoute` 过滤生成（`DefaultLayout.vue`）；
 3. **按钮级**：**`PermButton` 组件**（`src/components/PermButton.vue`）——无权限码**移除 DOM**（非置灰）。
 
 > **按钮级权限只有一种实现**：`PermButton`。原先并存的 `v-perm` 指令已删除（零引用、属死代码），
@@ -243,6 +294,33 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 > 需要包住非按钮 DOM 的场景目前不存在；若将来出现，再评估引入指令。
 
 **前端三道控制只做显示层，数据隔离完全由后端执行**——前端不冒充安全边界。
+
+#### 4.4.1 39 条权限码的门禁归属（逐码留档）
+
+`routes.ts` 的 `meta.permission` **一律引用 `PERMISSIONS` 常量**（2026-09-23 由字面量改为常量引用，
+消除拼写漂移面）。按门禁层级统计：
+
+| 门禁层级                                       | 条数 | 说明                                                                                                                                                                                                                                                    |
+| ---------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 页面级（`routes.ts`）                          | 23   | 见 §4.1 权限码表；`order:form:view:self` 同时 gate `/my-courses` 与 `/my-submissions`                                                                                                                                                                   |
+| 按钮级（`PermButton`/`ExportButton` `:code=`） | 19   | 超管管理页的增删改与各导出入口；无码即移除 DOM                                                                                                                                                                                                          |
+| 仅逻辑分支（store / 落地页解析）               | 5    | `semester:window:view`（窗口 store 跳过请求）、`config:config:manage`（config store 角色分流）、`dashboard:stat:view` / `order:form:submit` / `student:order:submit` / `order:form:view:college` / `supplier:order:view`（`resolveLandingPath` 优先级） |
+| **无任何门禁**                                 | 7    | 逐条结论见下表                                                                                                                                                                                                                                          |
+
+**7 条无门禁权限码的结论（无「既无门禁也无结论」项）**：
+
+| 权限码                       | 结论                   | 理由                                                                                                                                                                                                                          |
+| ---------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `semester:semester:activate` | 页面级已足够           | 激活按钮在 `/semester-window` 页内，该页需 `semester:semester:manage`；持该码者按后端角色配置必然也持 activate，且后端逐接口校验                                                                                              |
+| `textbook:book:import`       | 页面级已足够           | 导入向导在 `/textbooks` 页内（该页需 `textbook:book:manage`）；`ImportWizard` 不单独挂 `code`                                                                                                                                 |
+| `people:teacher:import`      | 页面级已足够           | 教师导入在 `/people` 页内（该页需 `people:student:import`）；两个导入页签同页共存                                                                                                                                             |
+| `import:batch:view`          | 本期无独立入口         | 批次进度由发起导入的页面内联展示（`ImportWizard` 轮询），无独立「批次列表」页；后端仍有该码约束 `/api/batch/**`                                                                                                               |
+| `student:order:view:all`     | 本期无独立入口         | 学生选购全量已在 `/order-data` 页（需 `order:form:view:all`）一并呈现，未单独按此码开页面                                                                                                                                     |
+| `notice:task:view`           | 本期无独立入口         | 通知任务查看并入 `/notices`（需 `notice:task:manage`），未给非超管开只读视图                                                                                                                                                  |
+| `role:permission:assign`     | 页面级已足够（待评估） | `/roles` 页需 `role:manage`；后端用更细的 `role:permission:assign` 区分「只配权限」的人。**当前后端角色配置中二者同时授予 ADMIN**，故前端不构成阻塞；若将来出现「只配权限、不建角色」的角色，需把该码加入页面门禁或改为按钮级 |
+
+> 后 3 条（`import:batch:view` / `student:order:view:all` / `notice:task:view`）属**能力可用但本期不开独立入口**，
+> 与小程序侧同类登记口径一致（见 `docs/08`）。
 
 ## 5. 会话与令牌（02 §3.1 · Q6）
 
@@ -279,22 +357,22 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 - **文件流接口不走包络解包**：`downloadBlob`（模板/错误明细）、`postForExport`
   （以响应 `Content-Type` 判定同步 xlsx 流还是异步 `{taskId}` 受理体，前端不预估行数，
   避免与后端 `export.sync_row_threshold` 漂移）、`parseFileName`（兼容 `filename*=UTF-8''x`）。
-- 接口模块（12 个业务模块 + `http.ts`，实际路径以后端 `API.md` V1.0.2 与 `/v3/api-docs` 为准）：
+- 接口模块（**13 个业务模块 + `http.ts`**，实际路径以后端 `API.md` **V1.1.0** 与 `/v3/api-docs` 为准）：
   `auth`（login/refresh/logout/switch-role/first-login-verify + me + config）、`semester`（学期 CRUD +
   activate/archive + window open/close/extend + 组织三表）、`people`（账号 + 导入批次）、`textbook`、
   `course`、`orderForm`（教师填报 + 复核）、`studentOrder`、`change`、`notice`、`exportTask`、
-  `dashboard`（看板 + 审计）、`supplier`（物理隔离 `/api/supplier/**`）。
+  `dashboard`（看板 + 审计）、`supplier`（物理隔离 `/api/supplier/**`）、`role`（角色 CRUD + 权限目录 + 角色-权限分配，BE-2）。
 - 接口文档策略：**不自建副本**，直接指向后端 `API.md` 与 `/v3/api-docs`。
 
 ## 7. 状态管理（Pinia）
 
-| store  | state                                                                                                                | 关键 actions / getters                                                                                                                                                                      |
-| ------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| auth   | access token（内存）、refreshToken、user、roles、**permissions: `string[]`**、currentRole、mustChangePassword、ready | login / logout / switchRole（切换后重拉权限与菜单）/ refreshPermissions / bootstrap（刷新页面静默恢复）                                                                                     |
-| window | status、windowStart/End、serverTime/Offset、semesterId/Name、channelOpen                                             | fetch（进入页面 + 60s 轮询，失败保持上次已知状态静默重试）；getter `canView/canFill/canOrder`、`remainMs/startRemainMs`（= `windowEnd - (clientNow + offset)`，PRD 功能 2：不信任本地时钟） |
-| notice | unconfirmed 队列、confirming、loaded                                                                                 | fetchUnconfirmed（失败 = fail-open 放行，下次进入重查）/ confirm(taskId)（失败弹窗保留可重试，不放行）；队列逐条弹出直至清空（Q7：含已停止重发但未确认任务）                                |
-| task   | imports/exports：`{data, polling, timer, interval, error}`                                                           | pollImport / pollExport（2s 起步、退避 1.5× 至上限 10s、终态自动停止）；**失败写入 `error` 并停止，再次调用即为重试**（消费方必须渲染 `error` 并提供重试入口）                              |
-| config | system_config 缓存（8 键）                                                                                           | load()（非超管不发请求，直接用与后端种子一致的内置默认值，避免 403 跳转）/ save()（仅超管）                                                                                                 |
+| store  | state                                                                                                                | 关键 actions / getters                                                                                                                                                                                                                                                             |
+| ------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| auth   | access token（内存）、refreshToken、user、roles、**permissions: `string[]`**、currentRole、mustChangePassword、ready | login / logout / switchRole（切换后重拉权限与菜单）/ refreshPermissions / bootstrap（刷新页面静默恢复）                                                                                                                                                                            |
+| window | status、windowStart/End、serverTime/Offset、semesterId/Name、channelOpen                                             | fetch（进入页面 + 60s 轮询，失败保持上次已知状态静默重试）；getter `canView/canFill/canOrder`、`remainMs/startRemainMs`（= `windowEnd - (clientNow + offset)`，PRD 功能 2：不信任本地时钟）                                                                                        |
+| notice | unconfirmed 队列、confirming、loaded                                                                                 | fetchUnconfirmed（失败 = fail-open 放行，下次进入重查）/ confirm(taskId)（失败弹窗保留可重试，不放行）；队列逐条弹出直至清空（Q7：含已停止重发但未确认任务）                                                                                                                       |
+| task   | imports/exports：`{data, polling, timer, interval, error}`                                                           | pollImport / pollExport（2s 起步、退避 1.5× 至上限 10s、终态自动停止）；**失败写入 `error` 并停止，再次调用即为重试**（消费方必须渲染 `error` 并提供重试入口）                                                                                                                     |
+| config | system_config 缓存（8 键）                                                                                           | load() 按角色分流：**超管**读全量 `GET /api/admin/config`（8 键）；**非超管**读 `GET /api/notice/subscribe-config`（登录即可，BE-5e）只取 `popupQueueMax`，其余键沿用与后端种子一致的内置默认值——两者失败都静默兜底（`popupQueueMax` 回退 5），不弹错、不跳 403 / save()（仅超管） |
 
 交互竞态（02 §3.3）：强制改密弹窗优先于通知弹窗，未改密不发业务请求；`/notice/unconfirmed` 失败 fail-open。
 
@@ -340,13 +418,17 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 
 ### 10.1 分层
 
-| 层          | 内容                                                                                                                                                                                    | 现状            |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| Vitest 单测 | 401 三类语义与 single-flight、403 分流、窗口三态与时钟偏移、路由落地页解析、ServerTable 请求序号与三态、task 轮询失败与重试、refresh token 持久层与多标签页同步、错误上报、表单校验工具 | 12 文件 / 76 例 |
-| 组件测试    | GlobalBlockingNotice 逐条确认队列与 fail-open、ImportWizard 轮询与错误回显、SemesterLifecyclePanel 激活/回退、PermButton 移除 DOM、ServerTable 分页与错误态                             | 含在上行        |
-| E2E         | Playwright：五角色落地页解析（含根路径回归）、认证与越权矩阵、侧边栏菜单过滤、按钮级权限、主链路走查、窗口三态、阻塞通知、错误态与重试                                                  | 4 文件 / 29 例  |
-| 跨仓库联调  | `integration.mjs`（仓库外脚手架，H2 起后端 + 端到端断言），见 README                                                                                                                    | 保留            |
-| 小程序专项  | `weixin-devtools-mcp`（跨仓库：textbook-order-mp）教师填报/选购/弹窗通知走查                                                                                                            | M3 / M5         |
+| 层              | 内容                                                                                                                                                                                                                    | 现状                         |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| Vitest 单测     | 401 三类语义与 single-flight、403 分流、窗口三态与时钟偏移、路由落地页解析、`canAccessRoute` 权限+角色判定、ServerTable 请求序号与三态、task 轮询失败与重试、refresh token 持久层与多标签页同步、错误上报、表单校验工具 | **17 文件 / 115 例**         |
+| 组件测试        | GlobalBlockingNotice 逐条确认队列与 fail-open、ImportWizard 轮询与错误回显、SemesterLifecyclePanel 激活/回退、PermButton 移除 DOM、ServerTable 分页与错误态、ExportButton 分流、选书页/通知页/角色页                    | **11 文件 / 70 例**          |
+| E2E             | Playwright：五角色落地页解析（含根路径回归）、认证与越权矩阵、侧边栏菜单过滤、按钮级权限、主链路走查、窗口三态、阻塞通知、错误态与重试                                                                                  | **6 文件 / 42 例**（本地桩） |
+| E2E（真实后端） | 同上 + `real-backend.spec.ts`（`E2E_REAL_BACKEND=1` 启用，种子账号口令运行时注入，见 `e2e/fixtures/seedCredentials.ts`）                                                                                                | **61 例**                    |
+| 跨仓库联调      | `npm run test:api`（仓库内 `scripts/api-contract-test.mjs`）：**111 端点 × 314 探针** 契约矩阵 + 12 个语义场景；旧的仓库外 H2 脚手架已退役                                                                              | PASS 314 / FAIL 0 / SKIP 0   |
+| 业务链路        | `node scripts/fullchain-web.mjs`：12 条链路（L1–L12）从起点走到终点且状态机真实落库，与契约测试互补（横切面 vs 纵切链路）                                                                                               | 12 条                        |
+| 小程序专项      | `weixin-devtools-mcp`（跨仓库：textbook-order-mp）教师填报/选购/弹窗通知走查                                                                                                                                            | M3 / M5                      |
+
+> 单测合计 **28 文件 / 185 例**（`npm run test` 实测）；E2E 桩模式 **42 例**（6 文件）、真实后端模式 **61 例**。
 
 ### 10.2 CI 门禁（`.github/workflows/ci.yml`）
 
@@ -363,35 +445,40 @@ M1 契约冻结值）。路由 `meta.permission`、侧边栏过滤、`PermButton
 
 - 统计范围：`src/api/http.ts`、`src/stores/**`、`src/utils/**`、`src/composables/**`、
   `src/router/**`、`src/components/**`。
-- **26 个页面视图不纳入单测覆盖率**，由 E2E 覆盖（否则数字只反映「视图有没有被 import 过」）。
-- 阈值锁定实测基线（2026-09-21：statements 47.4% / branches 44.4% / functions 43.1% / lines 47.9%），
-  各留约 2 个百分点余量。**每次补测后应上调，不得下调。**
-- 已知待补单测：`ExportButton`、`RoleSwitcher`、`WindowBanner`、`ForceChangePasswordModal`、`useCountdown`。
+- **28 个页面视图不纳入单测覆盖率**，由 E2E 覆盖（否则数字只反映「视图有没有被 import 过」）。
+- 阈值锁定实测基线（2026-09-22 实测：statements 50.5% / branches 46.4% / functions 45.3% / lines 51.4%），
+  各留约 2 个百分点余量，当前门禁值 **statements 48 / branches 44 / functions 43 / lines 49**
+  （真源 `vitest.config.ts` 的 `thresholds`）。**每次补测后应上调，不得下调。**
+- **待补单测已清零**：`RoleSwitcher`、`WindowBanner`、`ForceChangePasswordModal`、`useCountdown`
+  已于 2026-09-23 补齐（W-G4）；`ExportButton` 于 2026-09-22 补齐。
 
 ## 11. 风险与开放决策
 
 - 风险登记 F-R1~F-R6 见 02 v3 §9.3（万行渲染 / 订阅授权率 / 体验版条件 / moonzj 共存 / base 影响面 / 浏览器兼容）。
-- 已知残余风险：
-  - **refresh token 落 localStorage**：XSS 面增大。缓解措施：全仓无 `v-html`/`innerHTML`/`eval` 注入面、
-    无第三方脚本；部署侧补齐全套安全响应头与 CSP（`docs/DEPLOYMENT.md` §2.1）。
-  - **一次性下载 token 置于 URL query**：会进入服务端与代理访问日志。虽为单次有效 + 10 分钟过期，
-    仍属反模式；如需消除需后端改为请求头传递（记入后端待办）。
-  - **错误上报未接入平台**：默认仅 console；接入点已就绪（`setErrorReporter`），
-    且上报内容不含令牌与个人信息。
+- 已知残余风险（**每项均已闭环为三种结论之一**，2026-09-23）：
+
+| 风险                                 | 结论           | 依据                                                                                                                                                                                                                                                                                         |
+| ------------------------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **refresh token 落 localStorage**    | **已接受**     | 后端契约中 refreshToken 走请求体、不使用 `Set-Cookie`，localStorage 是唯一可持久化位置（§5 降级方案）。缓解：全仓无 `v-html`/`innerHTML`/`eval` 注入面、无第三方脚本；部署侧已补齐全套安全响应头与 CSP（`docs/DEPLOYMENT.md` §2.1，生产实测 CSP 违规 0）。风险未消除，接受理由与缓解措施如上 |
+| **一次性下载 token 置于 URL query**  | **已移交后端** | 会进入服务端与代理访问日志。虽为单次有效 + 10 分钟过期，仍属反模式；消除需后端改为请求头传递（已记入后端待办，前端侧无改动空间）                                                                                                                                                             |
+| **错误上报未接入平台**               | **已接受**     | 默认仅 console；接入点 `setErrorReporter()` 已就绪，接入时只改一处。且上报内容不含令牌与个人信息。试运行期量级不需要独立监控平台，接受现状                                                                                                                                                   |
+| **生产环境灌入演示种子账号**（新增） | **已登记**     | 生产与试运行同源种子账号，口令见 README 账号表（属联调文档）。移交检查单必须包含「生产不灌演示种子」项；正式启用前由超管清理演示数据                                                                                                                                                         |
+
 - 开放决策状态：
 
-| #   | 事项                   | 状态                                                                             |
-| --- | ---------------------- | -------------------------------------------------------------------------------- |
-| 1   | refresh token 存储方案 | ✅ **已关闭**：采用 localStorage 降级方案（见 §5），配套多标签页同步与部署侧 CSP |
-| 2   | 权限码终值             | ✅ **已关闭**：以 M1 冻结的 37 条为准，真源 `src/utils/constants.ts`             |
-| 3   | 分页参数命名           | ✅ **已关闭**：`page`/`size`                                                     |
-| 4   | 机房浏览器（Q14）      | ✅ **已关闭**：声明 Chrome ≥ 87 / Edge ≥ 88 / Firefox ≥ 78 / Safari ≥ 14（§3.4） |
-| 5   | 签字版式样张（Q4）     | ⏳ 未关闭：一周内提供，逾期标准表格 + 占位                                       |
+| #   | 事项                   | 状态                                                                                     |
+| --- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| 1   | refresh token 存储方案 | ✅ **已关闭**：采用 localStorage 降级方案（见 §5），配套多标签页同步与部署侧 CSP         |
+| 2   | 权限码终值             | ✅ **已关闭**：以 M1 冻结 + BE-2 新增后的 **39 条**为准，真源 `src/utils/constants.ts`   |
+| 3   | 分页参数命名           | ✅ **已关闭**：`page`/`size`                                                             |
+| 4   | 机房浏览器（Q14）      | ✅ **已关闭**：声明 Chrome ≥ 87 / Edge ≥ 88 / Firefox ≥ 78 / Safari ≥ 14（§3.4）         |
+| 5   | 签字版式样张（Q4）     | ⏳ 未关闭：样张由田老师提供，逾期按标准表格 + 签字栏占位执行（与后端 B-G3 同一外部依赖） |
 
 ## 12. 变更记录
 
-| 版本   | 日期       | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| V1.0.0 | 2026-09-21 | 首版：基于 02 号文档 v3（16 问复审拍板）与本仓库 PRD V1.1.0 撰写                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| V1.0.1 | 2026-09-21 | §3 与环境对齐 MVP 实现：mode 取默认 base/mock（本地开发零 env 文件）、`.env` 不入库、`VITE_MOCK` 开关；落地说明与偏离记录见 02 号文档 §9.4                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| V1.1.0 | 2026-09-21 | 按企业级评审结论全文回写：① 删除 mock 章节与 `VITE_MOCK`（mock 已整体移除）；② §2 工程结构按实际文件重写（api 模块清单、`types/`、`e2e/`、`docs/`、删除 `directives/perm.ts`）；③ §4 权限码表改为指向 `constants.ts` 真源并补落地页解析规则；④ §6 超时 15s→20s；⑤ §7 `permissions` 由 `Set` 改为 `string[]`；⑥ §8 删除 `BatchProgressDrawer`/`v-perm`/`usePolling`，补 `ServerTable` 泛型契约与 `useCountdown` 清理；⑦ 新增 §3.3 按需引入与体积基线、§3.4 浏览器矩阵、§3.5 指向部署手册；⑧ §10 重写测试与 CI 门禁（含覆盖率阈值）；⑨ §11 关闭 4 项开放决策、补残余风险 |
+| 版本   | 日期       | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| V1.0.0 | 2026-09-21 | 首版：基于 02 号文档 v3（16 问复审拍板）与本仓库 PRD V1.1.0 撰写                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| V1.0.1 | 2026-09-21 | §3 与环境对齐 MVP 实现：mode 取默认 base/mock（本地开发零 env 文件）、`.env` 不入库、`VITE_MOCK` 开关；落地说明与偏离记录见 02 号文档 §9.4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| V1.1.0 | 2026-09-21 | 按企业级评审结论全文回写：① 删除 mock 章节与 `VITE_MOCK`（mock 已整体移除）；② §2 工程结构按实际文件重写（api 模块清单、`types/`、`e2e/`、`docs/`、删除 `directives/perm.ts`）；③ §4 权限码表改为指向 `constants.ts` 真源并补落地页解析规则；④ §6 超时 15s→20s；⑤ §7 `permissions` 由 `Set` 改为 `string[]`；⑥ §8 删除 `BatchProgressDrawer`/`v-perm`/`usePolling`，补 `ServerTable` 泛型契约与 `useCountdown` 清理；⑦ 新增 §3.3 按需引入与体积基线、§3.4 浏览器矩阵、§3.5 指向部署手册；⑧ §10 重写测试与 CI 门禁（含覆盖率阈值）；⑨ §11 关闭 4 项开放决策、补残余风险                                                                                                                                                                                                                                                                                                                                                        |
+| V1.2.0 | 2026-09-23 | 按 `docs/12-前端文档对齐-goal-prompt-20260923.md` 与代码逐项对齐（W-U1/W-D2/W-D16/W-D17/W-D18/W-G5/W-G6）：① 头部废止「与 02 冲突以 02 为准」规则，改为「以代码与 API.md 为准」，02 号文档降级为存档；② §2 结构清单补 `docs/` 4 文件、根 `scripts/`、`prod-*.mjs`、`router/access.ts`、`role.ts`、`OrderFormItemsTable.vue`，视图 26→28、api 12→13；③ §3.1 trial base `/textbook/`→`/`（生产实为子域名根路径）；④ §4.1 权限码 37→39 并补 `/audit`、`/roles`；⑤ 新增 §4.2.1 `canAccessRoute` 权限+角色双重判定（2026-09-22 线上缺陷修复）；⑥ 新增 §4.4.1 39 条权限码逐码门禁归属与 7 条无门禁码的结论；⑦ §7 config store 非超管改为读 `subscribe-config`；⑧ §10 测试数字 12/76→16/110 单测 + 8/48 组件 + 5/41（桩）/51（真实后端）E2E，覆盖率阈值→48/44/43/49，跨仓库联调改指 `npm run test:api`；⑨ §11 残余风险逐项闭环结论 + 开放决策权限码改 39 条；⑩ `routes.ts` 权限码字面量改为 `PERMISSIONS` 常量引用（消除拼写漂移面） |

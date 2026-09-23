@@ -1,8 +1,8 @@
 /**
  * 全局常量：文案令牌（PRD 功能 7）、业务错误码（后端 ErrorCode 同源字符串令牌）、
- * 权限码（后端 sys_permission 37 条 · M1 冻结）。
+ * 权限码（后端 sys_permission 39 条 · M1 冻结 + BE-2 角色管理 2 条）。
  *
- * 契约基准：后端 API.md V1.0.0 + 实测响应（联调基线 probe-baseline.json）。
+ * 契约基准：后端 API.md V1.1.0 + 实测响应（联调基线 probe-baseline.json）。
  */
 
 /** 应用名（document.title 后缀、登录页品牌位） */
@@ -117,7 +117,7 @@ export const CONFIG_KEYS = {
   IMPORT_MAX_FILE_MB: 'import.max_file_mb',
 } as const
 
-/* ---------------- 权限码（后端 sys_permission 37 条 · M1 冻结） ---------------- */
+/* ---------------- 权限码（后端 sys_permission 39 条 · M1 冻结 + BE-2） ---------------- */
 export const PERMISSIONS = {
   // semester
   SEMESTER_MANAGE: 'semester:semester:manage',

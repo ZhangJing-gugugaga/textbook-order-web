@@ -58,12 +58,26 @@ const pairs = computed(() =>
   ),
 )
 
-/** 数量输入上限：后端 QTY_RANGE 以班级人数为上限、缺失回退 order.quantity.max_default；
- *  班级人数未由接口下发，故前端以 system_config 回退值作输入上限，最终以后端裁决为准。 */
+/**
+ * 数量输入上限。
+ *
+ * 真实上限是**班级人数**（后端提交时按 `QTY_RANGE` 校验），但班级人数当前未随
+ * `GET /api/teacher/my-courses` 下发（`docs/12` W-G2，跨端依赖），故前端回退
+ * `order.quantity.max_default`（默认 999）做**预校验**。
+ *
+ * 这里已按 classId 预留取值入口：后端一旦下发 `studentCount`，无需改本函数。
+ * 未下发时页面**显式提示**（见模板 `classSizeMissing` 告警），不静默按 999 放行——
+ * 否则教师会以为 999 就是合法上限，提交后才被后端驳回。
+ */
 function quantityMax(classId?: number) {
-  void classId
-  return config.quantityMax
+  const group = groups.value.find((item) => item.classId === classId)
+  return group?.studentCount ?? config.quantityMax
 }
+
+/** 班级人数未下发（当前恒为 true，直到后端补字段） */
+const classSizeMissing = computed(
+  () => groups.value.length > 0 && groups.value.every((group) => !group.studentCount),
+)
 
 const canFill = computed(() => windowStore.status === 'open')
 /** 补正豁免窗口：被驳回表单在 correctDeadline 前可重提 */
@@ -282,6 +296,20 @@ onMounted(() => {
         数量上限 {{ quantityMax() }}（班级人数缺失时回退 system_config）
       </span>
     </div>
+
+    <!-- W-G2：班级人数未下发时显式提示，不让「999」被当成真实上限 -->
+    <el-alert
+      v-if="classSizeMissing"
+      class="mb-16"
+      type="info"
+      :closable="false"
+      show-icon
+      title="数量上限暂按系统配置预校验"
+    >
+      班级人数尚未由接口下发，此处上限为系统配置的回退值；
+      <strong>提交时后端会按班级人数校验</strong>
+      ，超出部分会被驳回并提示具体行。
+    </el-alert>
 
     <!-- 审查 / 驳回状态条 -->
     <el-alert

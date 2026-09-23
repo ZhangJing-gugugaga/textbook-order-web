@@ -8,6 +8,7 @@ import { useWindowStore } from '@/stores/window'
 import { routes, type AppRouteMeta } from '@/router/routes'
 import { canAccessRoute } from '@/router/access'
 import { ROLE_LABELS } from '@/utils/constants'
+import type { RoleCode } from '@/types'
 import WindowBanner from '@/components/WindowBanner.vue'
 import RoleSwitcher from '@/components/RoleSwitcher.vue'
 
@@ -40,7 +41,8 @@ const menuGroups = computed(() => {
       const meta = child.meta
       if (!meta || meta.hidden) continue
       if (!canAccessRoute(meta, auth.permissions, auth.roles)) continue
-      const group = meta.group ?? '其他'
+      // 分组名可随当前身份覆盖（如异动申请：秘书归「学院秘书」、教师归「任课老师」，见 W-D19）
+      const group = meta.groupByRole?.[auth.displayRole as RoleCode] ?? meta.group ?? '其他'
       if (!groups.has(group)) groups.set(group, [])
       groups.get(group)!.push({ path: `/${child.path}`, title: meta.title, icon: meta.icon })
     }

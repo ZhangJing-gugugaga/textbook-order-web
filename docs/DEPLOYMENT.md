@@ -56,14 +56,18 @@ npm ci                         # 严格按 lockfile 安装，不要用 npm insta
 
 前端只有两个环境变量，**均不含密钥**，且已入库（`.env.trial` / `.env.school`）：
 
-| 变量                | 含义                          | trial / school 取值     |
-| ------------------- | ----------------------------- | ----------------------- |
-| `VITE_BASE`         | 部署子路径（必须以 `/` 收尾） | `/textbook/`            |
-| `VITE_PROXY_TARGET` | dev/preview 的代理目标        | `http://127.0.0.1:8080` |
-| `VITE_SOURCEMAP`    | 置 `1` 时产出 sourcemap       | 默认不设（关闭）        |
+| 变量                | 含义                          | trial 取值              | school 取值             |
+| ------------------- | ----------------------------- | ----------------------- | ----------------------- |
+| `VITE_BASE`         | 部署子路径（必须以 `/` 收尾） | `/`                     | `/textbook/`            |
+| `VITE_PROXY_TARGET` | dev/preview 的代理目标        | `http://127.0.0.1:8080` | `http://127.0.0.1:8080` |
+| `VITE_SOURCEMAP`    | 置 `1` 时产出 sourcemap       | 默认不设（关闭）        | 默认不设（关闭）        |
 
-> **重要**：`VITE_BASE` 与 Nginx 的 `location` 路径必须一致。若校方要求部署在 `/jiaocai/`，
-> 则改 `.env.school` 的 `VITE_BASE=/jiaocai/` 并同步修改 Nginx 配置，**代码无需改动**。
+> **trial 是 `/` 不是 `/textbook/`**（2026-09-23 生产核对）：试运行部署形态是**独立子域名根路径**
+> （`textbooksorder.moonzj.com`），产物引用 `/assets/...`。若改回主域子路径部署，需同步改
+> `.env.trial` 与反向代理的 `location`。**构建前务必用 §1.3 的自检命令确认前缀。**
+>
+> **重要**：`VITE_BASE` 与反向代理的 `location` 路径必须一致。若校方要求部署在 `/jiaocai/`，
+> 则改 `.env.school` 的 `VITE_BASE=/jiaocai/` 并同步修改反向代理配置，**代码无需改动**。
 >
 > 路由 base 取自 Vite 注入的 `import.meta.env.BASE_URL`（与 `vite.config.ts` 的 `base` 同源），
 > 因此不会出现「资源路径与路由 base 不一致」的错配。

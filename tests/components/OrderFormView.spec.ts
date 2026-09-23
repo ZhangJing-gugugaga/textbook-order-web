@@ -149,3 +149,53 @@ describe('填报页 · 撤回修改入口（canWithdraw 分支矩阵）', () => 
     expect(ElMessage.error).toHaveBeenCalledWith('征订窗口已关闭，无法撤回')
   })
 })
+
+/**
+ * 数量上限来源（W-G2）。
+ *
+ * 真实上限是班级人数，但 `GET /api/teacher/my-courses` **当前不下发** `studentCount`。
+ * 这条约束必须显式可见：教师看到 999 时要知道那是系统配置的回退值、真实上限由后端
+ * 在提交时按班级人数校验——否则「填了 999、提交被驳回」会被当成产品缺陷。
+ */
+describe('填报页 · 数量上限来源（W-G2）', () => {
+  async function mountWithGroups(
+    groups: { classId: number; className: string; studentCount?: number }[],
+  ) {
+    myCourses.mockResolvedValue(
+      groups.map((g) => ({
+        classId: g.classId,
+        className: g.className,
+        studentCount: g.studentCount,
+        courses: [{ courseId: 501, courseName: '数据结构' }],
+      })) as never,
+    )
+    myForm.mockResolvedValue(makeForm('draft'))
+
+    const wrapper = mount(OrderFormView, { global: { plugins: [ElementPlus] } })
+    const windowStore = useWindowStore()
+    windowStore.status = 'open'
+    await flushPromises()
+    return wrapper
+  }
+
+  it('班级人数未下发：显式提示「暂按系统配置预校验」，不静默按 999 放行', async () => {
+    const wrapper = await mountWithGroups([{ classId: 11, className: '软件工程 2301' }])
+
+    expect(wrapper.text()).toContain('数量上限暂按系统配置预校验')
+    expect(wrapper.text()).toContain('提交时后端会按班级人数校验')
+  })
+
+  it('班级人数已下发：不再提示回退（上限有真实来源）', async () => {
+    const wrapper = await mountWithGroups([
+      { classId: 11, className: '软件工程 2301', studentCount: 45 },
+    ])
+
+    expect(wrapper.text()).not.toContain('数量上限暂按系统配置预校验')
+  })
+
+  it('无任课关系时不提示（空态下谈上限没有意义）', async () => {
+    const wrapper = await mountWithGroups([])
+
+    expect(wrapper.text()).not.toContain('数量上限暂按系统配置预校验')
+  })
+})

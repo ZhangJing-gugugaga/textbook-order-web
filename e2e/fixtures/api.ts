@@ -210,6 +210,12 @@ export interface MockOptions {
    * 超管拿到角色专属权限时，前端菜单仍不得渲染别角色分组）。
    */
   permissions?: string[]
+  /** 学期列表（通知管理页的学期筛选依赖它；含一个 active + 一个 archived） */
+  semesters?: unknown[]
+  /** 通知任务列表（FE-W5：学期筛选 + 立即发送） */
+  noticeTasks?: unknown[]
+  /** `confirm-by-entry` 的返回（FE-W6） */
+  confirmedByEntry?: number
 }
 
 interface Session {
@@ -366,7 +372,74 @@ export async function mockApi(page: Page, loginRole: RoleCode, options: MockOpti
     }
 
     if (path === '/admin/semester') {
+      return json(200, ok(options.semesters ?? []))
+    }
+
+    // ---- FE-W6：进入选书页即确认收到（幂等） ----
+    if (path === '/notice/confirm-by-entry' && method === 'POST') {
+      return json(200, ok({ confirmed: options.confirmedByEntry ?? 0 }))
+    }
+
+    // ---- FE-W5：通知任务（学期筛选 + 立即发送一轮） ----
+    if (path === '/admin/notice/tasks' && method === 'GET') {
+      const all = (options.noticeTasks ?? []) as { semesterId?: number }[]
+      // 桩要体现「学期筛选真的把参数传下去了」：传了 semesterId 就按它过滤
+      const semesterId = url.searchParams.get('semesterId')
+      const list = semesterId ? all.filter((t) => String(t.semesterId) === semesterId) : all
+      return json(200, ok(list))
+    }
+
+    if (/^\/admin\/notice\/tasks\/\d+\/send-now$/.test(path) && method === 'POST') {
+      return json(200, ok({ roundNo: 2, sent: 12, confirmed: 3, unauthorized: 1, failed: 0 }))
+    }
+
+    // ---- FE-W4：异动（模板下载 + 异步批次导入 + 目标归属选项） ----
+    if (path === '/secretary/change/template' && method === 'GET') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers: {
+          'Content-Disposition':
+            "attachment; filename*=UTF-8''%E5%BC%82%E5%8A%A8%E6%A8%A1%E6%9D%BF.xlsx",
+        },
+        body: 'PK\u0003\u0004e2e-xlsx-stub',
+      })
+    }
+
+    if (path === '/secretary/change/import' && method === 'POST') {
+      // 异步批次：响应只有 batchId，进度走 /batch/{id}
+      return json(200, ok({ batchId: 'E2E-BATCH-1' }))
+    }
+
+    if (path === '/change/org-options') {
+      return json(
+        200,
+        ok({
+          colleges: [{ id: 1, name: '计算机学院' }],
+          classes: [{ id: 11, name: '软件工程 2301', majorId: 1 }],
+        }),
+      )
+    }
+
+    if (path === '/teacher/change') {
       return json(200, ok([]))
+    }
+
+    // 通用批次进度（ImportWizard 轮询）：直接给终态，避免 E2E 等 2s 起步的退避轮询
+    if (/^\/batch\/[^/]+$/.test(path)) {
+      return json(
+        200,
+        ok({
+          batchId: 'E2E-BATCH-1',
+          bizType: 'change',
+          status: 'done',
+          progressPct: 100,
+          totalCount: 2,
+          okCount: 2,
+          errorCount: 0,
+          errorDetail: [],
+        }),
+      )
     }
 
     if (path === '/admin/college' || path === '/admin/major' || path === '/admin/class') {

@@ -1,7 +1,8 @@
 import type { RouteRecordRaw } from 'vue-router'
 import type { RoleCode } from '@/types'
+import { PERMISSIONS } from '@/utils/constants'
 
-/** 路由元信息：权限码取后端 sys_permission（M1 冻结 37 条） */
+/** 路由元信息：权限码取后端 sys_permission（真源 `PERMISSIONS`，共 39 条） */
 export interface AppRouteMeta {
   /** 页面标题：侧边栏文案 + document.title（守卫 afterEach 写入） */
   title: string
@@ -22,6 +23,14 @@ export interface AppRouteMeta {
   roles?: RoleCode[]
   /** 菜单分组（无权限的分组整体不渲染） */
   group?: string
+  /**
+   * 分组名按**当前身份**覆盖（W-D19）。用于「同一页面被多个角色共用、但归属分组不同」的场景：
+   * `/change-requests` 是秘书与教师同链的功能，秘书看到它属于「学院秘书」，
+   * 教师看到它属于「任课老师」——写死 `group` 会让教师的自助功能挂在「学院秘书」下。
+   *
+   * 取值优先于 `group`；当前身份不在表中时回退 `group`。
+   */
+  groupByRole?: Partial<Record<RoleCode, string>>
   /** 不进侧边栏菜单 */
   hidden?: boolean
 }
@@ -65,7 +74,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '数据看板',
           icon: 'DataBoard',
-          permission: 'dashboard:stat:view',
+          permission: PERMISSIONS.DASHBOARD_VIEW,
           group: '教材室',
         },
       },
@@ -76,7 +85,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '账号管理',
           icon: 'User',
-          permission: 'user:account:manage',
+          permission: PERMISSIONS.USER_MANAGE,
           group: '教材室',
         },
       },
@@ -87,7 +96,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '组织管理',
           icon: 'OfficeBuilding',
-          permission: 'org:college:manage',
+          permission: PERMISSIONS.ORG_COLLEGE_MANAGE,
           group: '教材室',
         },
       },
@@ -98,7 +107,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '学期与窗口引擎',
           icon: 'Calendar',
-          permission: 'semester:semester:manage',
+          permission: PERMISSIONS.SEMESTER_MANAGE,
           group: '教材室',
         },
       },
@@ -109,7 +118,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '教材库',
           icon: 'Reading',
-          permission: 'textbook:book:manage',
+          permission: PERMISSIONS.TEXTBOOK_MANAGE,
           group: '教材室',
         },
       },
@@ -120,7 +129,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '课程与任课管理',
           icon: 'Notebook',
-          permission: 'course:course:manage',
+          permission: PERMISSIONS.COURSE_MANAGE,
           group: '教材室',
         },
       },
@@ -131,7 +140,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '学生/教师管理',
           icon: 'Avatar',
-          permission: 'people:student:import',
+          permission: PERMISSIONS.STUDENT_IMPORT,
           group: '教材室',
         },
       },
@@ -142,7 +151,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '复核工作台',
           icon: 'Finished',
-          permission: 'order:form:review',
+          permission: PERMISSIONS.ORDER_FORM_REVIEW,
           group: '教材室',
         },
       },
@@ -153,7 +162,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '征订数据',
           icon: 'TrendCharts',
-          permission: 'order:form:view:all',
+          permission: PERMISSIONS.ORDER_FORM_VIEW_ALL,
           group: '教材室',
         },
       },
@@ -164,7 +173,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '导出中心',
           icon: 'Download',
-          permission: 'export:order:create',
+          permission: PERMISSIONS.EXPORT_ORDER,
           // 秘书虽有 export:order:create（后端支持「秘书本院」范围），但本页会无条件拉取
           // 学院列表 / 通知任务 / 全院表单等超管专属数据 → 秘书进来立刻吃 403 被弹到 /403 页
           // （2026-09-22 全页面矩阵走查发现）。SPEC §4 亦将该页归属超管；
@@ -180,7 +189,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '通知管理',
           icon: 'Bell',
-          permission: 'notice:task:manage',
+          permission: PERMISSIONS.NOTICE_TASK_MANAGE,
           group: '教材室',
         },
       },
@@ -191,7 +200,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '审计日志',
           icon: 'Document',
-          permission: 'audit:log:view',
+          permission: PERMISSIONS.AUDIT_VIEW,
           group: '教材室',
         },
       },
@@ -202,7 +211,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '角色管理',
           icon: 'Lock',
-          permission: 'role:manage',
+          permission: PERMISSIONS.ROLE_MANAGE,
           group: '教材室',
         },
       },
@@ -214,7 +223,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '本院征订记录',
           icon: 'Document',
-          permission: 'order:form:view:college',
+          permission: PERMISSIONS.ORDER_FORM_VIEW_COLLEGE,
           roles: ['SECRETARY'],
           group: '学院秘书',
         },
@@ -226,7 +235,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '本院导出（签字版）',
           icon: 'Download',
-          permission: 'export:signature:create',
+          permission: PERMISSIONS.EXPORT_SIGNATURE,
           roles: ['SECRETARY'],
           group: '学院秘书',
         },
@@ -238,7 +247,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '窗口状态',
           icon: 'Calendar',
-          permission: 'semester:window:view',
+          permission: PERMISSIONS.WINDOW_VIEW,
           roles: ['SECRETARY'],
           group: '学院秘书',
         },
@@ -250,10 +259,12 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '异动申请',
           icon: 'Switch',
-          permission: 'change:request:submit',
+          permission: PERMISSIONS.CHANGE_SUBMIT,
           // 异动由「知道真实变动的人」提交（PRD：秘书与任课教师同链），教材室只做审批
           roles: ['SECRETARY', 'TEACHER'],
           group: '学院秘书',
+          // 同一页面两个角色共用，分组随身份走：教师的自助功能不该挂在「学院秘书」下（W-D19）
+          groupByRole: { SECRETARY: '学院秘书', TEACHER: '任课老师' },
         },
       },
       /* ---------------- 任课老师 ---------------- */
@@ -264,7 +275,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '我的课程',
           icon: 'Reading',
-          permission: 'order:form:view:self',
+          permission: PERMISSIONS.ORDER_FORM_VIEW_SELF,
           roles: ['TEACHER'],
           group: '任课老师',
         },
@@ -276,7 +287,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '填报教材',
           icon: 'EditPen',
-          permission: 'order:form:submit',
+          permission: PERMISSIONS.ORDER_FORM_SUBMIT,
           roles: ['TEACHER'],
           group: '任课老师',
         },
@@ -288,7 +299,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '我的提交记录',
           icon: 'List',
-          permission: 'order:form:view:self',
+          permission: PERMISSIONS.ORDER_FORM_VIEW_SELF,
           roles: ['TEACHER'],
           group: '任课老师',
         },
@@ -301,7 +312,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '选书',
           icon: 'ShoppingCart',
-          permission: 'student:order:submit',
+          permission: PERMISSIONS.STUDENT_ORDER_SUBMIT,
           roles: ['STUDENT'],
           group: '学生',
         },
@@ -313,7 +324,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '我的选购记录',
           icon: 'List',
-          permission: 'student:order:view:self',
+          permission: PERMISSIONS.STUDENT_ORDER_VIEW_SELF,
           roles: ['STUDENT'],
           group: '学生',
         },
@@ -326,7 +337,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '订购清单',
           icon: 'Files',
-          permission: 'supplier:order:view',
+          permission: PERMISSIONS.SUPPLIER_ORDER_VIEW,
           roles: ['SUPPLIER'],
           group: '教材供货商',
         },
@@ -338,7 +349,7 @@ export const routes: RouteRecordRaw[] = [
         meta: {
           title: '清单导出',
           icon: 'Download',
-          permission: 'supplier:order:export',
+          permission: PERMISSIONS.SUPPLIER_ORDER_EXPORT,
           roles: ['SUPPLIER'],
           group: '教材供货商',
         },

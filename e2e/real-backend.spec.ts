@@ -187,6 +187,21 @@ test.describe('真实后端走查：五角色落地页与菜单（无桩）', ()
     }
   })
 
+  test('回归（W-D19）：教师侧「异动申请」归「任课老师」分组，不挂在「学院秘书」下', async ({
+    page,
+  }) => {
+    await realLogin(page, 'TEACHER')
+    await expect(page).toHaveURL(/\/my-courses$/)
+
+    const groups = await groupTitles(page)
+    // 异动申请是秘书与教师同链的功能：教师身份下它的归属分组必须是「任课老师」
+    expect(groups).toContain('任课老师')
+    expect(groups, '教师侧不应出现「学院秘书」分组').not.toContain('学院秘书')
+
+    const titles = await menuTitles(page)
+    expect(titles).toContain('异动申请')
+  })
+
   test('多角色账号（教师+秘书）：落地为当前身份的入口，切换身份后菜单与落地页随之切换', async ({
     page,
   }) => {

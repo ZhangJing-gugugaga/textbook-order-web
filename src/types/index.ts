@@ -403,6 +403,17 @@ export interface TeacherCourseGroup {
   classId: number
   className: string
   courses: { courseId: number; courseName: string }[]
+  /**
+   * 班级人数（**当前后端不下发**，见 `docs/12` W-G2）。
+   *
+   * 它是「单行数量上限」的真实来源：后端提交时按班级人数校验 `QTY_RANGE`。
+   * 前端只能回退 `order.quantity.max_default` 做预校验，因此页面会**显式提示**
+   * 「上限按系统配置预校验、最终以后端为准」，而不是静默按 999 放行。
+   *
+   * 后端一旦在 `my-courses` 或教师明细接口下发该字段，这里即可直接接上
+   * （`OrderFormView` 的 `quantityMax(classId)` 已按班级预留取值入口）。
+   */
+  studentCount?: number
 }
 
 /** 教师选书器选项（GET /api/teacher/textbook，仅在库教材） */

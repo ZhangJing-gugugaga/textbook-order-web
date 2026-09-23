@@ -56,12 +56,22 @@ async function load() {
       studentOrderApi.myOrder(),
     ])
     const submitted = new Map((order?.items ?? []).map((item) => [item.textbookId, item.quantity]))
-    rows.value = books.map((book) => ({
-      ...book,
-      // 回显已提交选购单：有记录即勾选并带出数量
-      checked: submitted.has(book.textbookId),
-      quantity: submitted.get(book.textbookId) ?? 0,
-    }))
+    /**
+     * 首次进入（无已提交选购单）时必修教材默认勾选 1 本（PRD 选书页字段规范 / W-G1）。
+     * 已提交过的单**整单以回显为准**——否则学生会看到「我明明没勾的书被勾上了」。
+     * 已下架的必修书不预勾（不可选，预勾会直接触发 BOOK_DELISTED）。
+     */
+    const firstEntry = submitted.size === 0
+    rows.value = books.map((book) => {
+      const picked = submitted.has(book.textbookId)
+      const preset = firstEntry && book.required && !book.delisted
+      return {
+        ...book,
+        // 回显已提交选购单：有记录即勾选并带出数量
+        checked: picked || preset,
+        quantity: picked ? (submitted.get(book.textbookId) ?? 0) : preset ? 1 : 0,
+      }
+    })
   } catch (error) {
     rows.value = []
     ElMessage.error((error as Error)?.message || COPY.FAILED)
