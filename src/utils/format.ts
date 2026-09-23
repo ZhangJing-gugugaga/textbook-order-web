@@ -53,16 +53,17 @@ export function toLocalInputValue(input: string | null | undefined): string {
 }
 
 /**
- * 日期时间入参的**格式不对称**（实测 2026-09-22，联调发现）：
+ * 日期时间入参的格式口径（**2026-09-23 更正**）：
  *
- * - **JSON body** 里的 `LocalDateTime` 走 Jackson 的 JSR-310 默认解析，只认 ISO-8601
- *   （`yyyy-MM-ddTHH:mm:ss`）；传 `yyyy-MM-dd HH:mm:ss`（空格）会 **400 PARAM_INVALID**。
- *   注意 API.md §1.1 写的「入参（body/query）一律 yyyy-MM-dd HH:mm:ss」对 body 并不成立。
- * - **query 参数** 里的 `LocalDateTime`（如 `/api/admin/audit` 的 `startAt/endAt`）反而要求
- *   空格格式 `yyyy-MM-dd HH:mm:ss`，传 ISO 的 `T` 会 400。
+ * - 后端自 V1.0.5 起由 `TimeFormatConfig`/`TimeFormats` 统一解析，**body 与 query 都接受**
+ *   `yyyy-MM-ddTHH:mm:ss`（ISO-8601）与 `yyyy-MM-dd HH:mm:ss`（空格，含缺秒 `HH:mm`）；
+ *   日期字段（`LocalDate`）接受 `yyyy-MM-dd`，带时间也按日期取值。出参恒为 ISO-8601。
+ * - 此前注释记录的「body 只认 ISO、query 只认空格」是 `TimeFormatConfig` 上线前的旧行为，
+ *   已被生产实测推翻（`PUT /api/admin/semester/{id}` 传空格格式返回 200 并真实写库）。
  *
- * 因此：el-date-picker 的 `value-format` 统一保持空格格式（便于展示与比较），
- * **只在进出接口层时转换**（见 `toWireDateTime` / `toPickerDateTime`）。
+ * 因此 `toWireDateTime` 不是"必须的转换"，而是**保持调用形态稳定**的归一化：继续传 ISO 没问题，
+ * 新接口也不必再为 body/query 分别做格式转换；格式确实非法时后端返回 400 + 逐字段提示。
+ * el-date-picker 的 `value-format` 仍统一保持空格格式（便于展示与比较），只在进出接口层转换。
  */
 export const WIRE_DATETIME_SEPARATOR = 'T'
 

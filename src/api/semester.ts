@@ -3,12 +3,12 @@ import { toWireDateTime } from '@/utils/format'
 import type { AuditLog, College, Klass, Major, PageResult, Semester, WindowState } from '@/types'
 
 /**
- * 学期与窗口引擎（API.md §3.2 · 12 端点）。
+ * 学期与窗口引擎（API.md §3.2 · 13 端点）。
  *
- * **时间入参格式（实测 2026-09-22，与 API.md §1.1 的表述有出入）**：JSON body 里的
- * `LocalDateTime` 只认 ISO-8601（`yyyy-MM-ddTHH:mm:ss`），传空格格式会 400 PARAM_INVALID。
- * el-date-picker 的值是空格格式，因此在接口层统一用 `toWireDateTime` 转换
- * （query 参数则相反，要求空格格式——详见 `utils/format.ts` 的格式不对称说明）。
+ * **时间入参格式（2026-09-23 更正）**：后端 `TimeFormatConfig` 统一了解析口径，**body 与 query
+ * 都接受** ISO-8601（`yyyy-MM-ddTHH:mm:ss`）与空格格式（`yyyy-MM-dd HH:mm:ss`），日期字段
+ * （`startDate/endDate`）带时间也按日期取值。此处保留 `toWireDateTime` 只是为了形态稳定，
+ * 不是"必须转 ISO"（此前注释记的"body 只认 ISO、query 只认空格"是旧行为，已被实测推翻）。
  */
 export const semesterApi = {
   /** 学期列表（draft/active/archived） */
@@ -29,7 +29,19 @@ export const semesterApi = {
   /** 双缓冲原子切换：body 带 version 乐观锁（不匹配 → 409 STATE_CONFLICT） */
   activate: (id: number, version: number) =>
     http.post<Semester>(`/admin/semester/${id}/activate`, { version }),
-  archive: (id: number) => http.post<void>(`/admin/semester/${id}/archive`),
+  /**
+   * 归档（**二次门禁**，2026-09-23）：`version` 必填（乐观锁）；
+   * 窗口进行中（windowStatus=open 或 channelOpen=1）时必须显式 `confirmWindowOpen=true`，
+   * 否则后端 409 并说明「归档会立即停止全站征订业务」。
+   */
+  archive: (id: number, version: number, confirmWindowOpen = false) =>
+    http.post<void>(`/admin/semester/${id}/archive`, { version, confirmWindowOpen }),
+  /**
+   * 撤销归档（受限回滚，2026-09-23）：仅当当前没有 active 学期时可用（误归档现场），
+   * 恢复后窗口保持 closed，需手动重新开启。
+   */
+  unarchive: (id: number, version: number) =>
+    http.post<Semester>(`/admin/semester/${id}/unarchive`, { version, confirm: true }),
   /** 设置窗口起止 + auto 开关 */
   setWindow: (
     id: number,

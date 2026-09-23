@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { h, onMounted, reactive, ref } from 'vue'
+import type { VNode } from 'vue'
 
 import { accountsApi, batchApi } from '@/api/people'
 import { changeApi } from '@/api/change'
@@ -20,7 +21,7 @@ import {
 } from '@/utils/constants'
 import { formatDateTime } from '@/utils/format'
 import { asRow } from '@/utils/table'
-import type { ChangeRequestListItem, College } from '@/types'
+import type { ChangeRequestListItem, ClassSizeDiff, College, ImportPreview } from '@/types'
 
 /**
  * 学生/教师管理 + 异动审批工作台（PRD 教材室-学生/教师管理 / API.md §3.5 §3.8）：
@@ -202,6 +203,85 @@ onMounted(async () => {
   semesterId.value = windowStore.semesterId
   colleges.value = await orgApi.colleges().catch(() => [])
 })
+
+/* ---------------- 名单导入（局部名单门禁，B13） ---------------- */
+
+/**
+ * 导入前的「班级人数 diff 强确认」。
+ *
+ * 背景（后端测试报告 B13）：学生名单导入会把班级人数重算为文件内该班去重人数，而班级人数是
+ * 教师填报数量的硬上限——局部名单会把上限压小（线上实测 50 → 2，该班教师随即无法填报）。
+ * 后端现在对「下调比例超阈值且不少于下限人数」的导入直接 409；前端在导入前先调预览接口，
+ * 把 diff 摆到管理员面前确认，确认后再带 confirmClassSizeShrink=true 重提。
+ */
+function buildPreviewMessage(preview: ImportPreview, diffs: ClassSizeDiff[]) {
+  const children: (VNode | null)[] = [
+    h(
+      'p',
+      `本次导入会把 ${diffs.length} 个班级的人数下调超过阈值（> ${preview.shrinkConfirmPct}% 且不少于 ${preview.shrinkConfirmMinDrop} 人）：`,
+    ),
+    ...diffs
+      .slice(0, 8)
+      .map((diff) =>
+        h(
+          'p',
+          { style: 'margin: 2px 0' },
+          `${diff.className}（${diff.collegeName || '—'}/${diff.majorName || '—'}）${diff.currentCount} → ${diff.incomingCount}（-${diff.drop}，${diff.dropPct}%）`,
+        ),
+      ),
+    diffs.length > 8 ? h('p', `…等共 ${diffs.length} 个班级`) : null,
+    h(
+      'p',
+      `文件共 ${preview.totalRows} 行（有效 ${preview.okRows} 行），将新建 ${preview.newUserCount} 个账号。`,
+    ),
+    preview.disableComparisonApplies && preview.disableEstimate > 0
+      ? h(
+          'p',
+          `另有 ${preview.disableEstimate} 个在册账号不在名单内，导入后将被停用（范围仅限文件内学院+角色）。`,
+        )
+      : null,
+    h('p', '班级人数是教师填报数量的上限，下调会立即收紧该班教师可填数量。确认这是完整名单吗？'),
+  ]
+  return h('div', children)
+}
+
+/** 上传入口：学生名单先预览 → 命中阈值则强确认 → 带确认标记重提 */
+async function uploadPeopleFile(file: File) {
+  const target = semesterId.value ?? undefined
+  const role = personType.value
+  if (role !== 'student') {
+    return accountsApi.importExcel(file, role, target)
+  }
+  try {
+    const preview = await accountsApi.previewImport(file, role, target)
+    const flagged = preview.classSizeDiffs.filter((diff) => diff.requiresConfirm)
+    if (preview.requiresConfirm && flagged.length > 0) {
+      await ElMessageBox.confirm(buildPreviewMessage(preview, flagged), '班级人数将被下调', {
+        type: 'warning',
+        confirmButtonText: '确认导入',
+        cancelButtonText: '取消（改用完整名单）',
+      })
+      return accountsApi.importExcel(file, role, target, true)
+    }
+  } catch (error) {
+    const apiError = error as { code?: string; message?: string }
+    // 预览未命中阈值 → 直接导入；但若后端仍 409（如预览与导入之间数据变化），
+    // 用后端 message 做一次强确认后带标记重提，不把「需要确认」伪装成失败。
+    if (
+      apiError?.code !== 'STATE_CONFLICT' ||
+      !apiError.message?.includes('confirmClassSizeShrink')
+    ) {
+      throw error
+    }
+    await ElMessageBox.confirm(apiError.message, '班级人数将被下调', {
+      type: 'warning',
+      confirmButtonText: '确认导入',
+      cancelButtonText: '取消',
+    })
+    return accountsApi.importExcel(file, role, target, true)
+  }
+  return accountsApi.importExcel(file, role, target)
+}
 </script>
 
 <template>
@@ -253,9 +333,7 @@ onMounted(async () => {
         <div class="mt-16">
           <ImportWizard
             :title="`${personType === 'student' ? '学生' : '教师'}名单 Excel 导入（异步批次）`"
-            :uploader="
-              (file: File) => accountsApi.importExcel(file, personType, semesterId ?? undefined)
-            "
+            :uploader="uploadPeopleFile"
             :poller="batchApi.detail"
             :error-downloader="downloadErrorDetail"
             :template-downloader="() => accountsApi.template(personType)"

@@ -102,20 +102,56 @@ async function activate() {
 }
 
 async function archive() {
+  const windowLive = props.semester.channelOpen === 1 || props.semester.windowStatus === 'open'
   try {
-    await ElMessageBox.confirm('确认归档该学期？归档后不可再填报。', '归档学期', {
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      windowLive
+        ? '该学期征订窗口仍在进行中：归档会立即停止全站征订业务（学生选购、教师填报、导出将统一报「当前没有激活学期」），且归档不可撤销。确认归档？'
+        : '确认归档该学期？归档后不可再填报，且不可撤销（误归档只能用「撤销归档」回滚，且要求当前没有激活学期）。',
+      windowLive ? '归档进行中的学期' : '归档学期',
+      {
+        type: 'warning',
+        confirmButtonText: windowLive ? '确认归档（停止征订）' : '确认归档',
+      },
+    )
   } catch {
     return
   }
   saving.value = true
   try {
-    await semesterApi.archive(props.semester.id)
+    // 二次门禁（B11）：version 乐观锁 + 窗口进行中的显式确认
+    await semesterApi.archive(props.semester.id, props.semester.version, windowLive)
     ElMessage.success('已归档')
     emit('changed')
   } catch (error) {
+    // 409 多为「窗口状态已变更」或 version 过期：如实展示后端文案（含影响说明），由用户决定是否重试
     ElMessage.error((error as Error)?.message || '操作失败，请重试')
+    emit('changed')
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 撤销归档（受限回滚，B15）：仅当前没有 active 学期时可用，窗口需手动重新开启 */
+async function unarchive() {
+  try {
+    await ElMessageBox.confirm(
+      '确认撤销归档？该学期将恢复为「当前学期」，全站业务随即恢复可用。窗口仍为已截止，需要手动重新开启征订。',
+      '撤销归档',
+      { type: 'warning', confirmButtonText: '确认撤销归档' },
+    )
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    await semesterApi.unarchive(props.semester.id, props.semester.version)
+    ElMessage.success('已撤销归档，请按需重新开启征订窗口')
+    emit('changed')
+    await loadChanges()
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || '操作失败，请重试')
+    emit('changed')
   } finally {
     saving.value = false
   }
@@ -297,6 +333,15 @@ loadChanges()
           @click="archive"
         >
           归档
+        </PermButton>
+        <PermButton
+          v-if="semester.activeStatus === 'archived'"
+          :code="PERMISSIONS.SEMESTER_MANAGE"
+          type="warning"
+          :loading="saving"
+          @click="unarchive"
+        >
+          撤销归档
         </PermButton>
       </div>
     </div>

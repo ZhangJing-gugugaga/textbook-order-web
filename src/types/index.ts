@@ -226,6 +226,46 @@ export interface ImportBatch {
   updatedAt?: string
 }
 
+/* ---------------- 导入预览（局部名单防护，B13） ---------------- */
+
+/** 单个班级的人数 diff（`POST /api/admin/user/import/preview`） */
+export interface ClassSizeDiff {
+  classId: number
+  className: string
+  majorName?: string
+  collegeName?: string
+  /** 库中当前人数（教师填报数量上限来源） */
+  currentCount: number
+  /** 文件内该班去重学生数（导入后的新值） */
+  incomingCount: number
+  /** 下调人数（未下调为 0） */
+  drop: number
+  /** 下调比例（百分数） */
+  dropPct: number
+  /** 是否命中阈值，导入需显式确认 */
+  requiresConfirm: boolean
+}
+
+/** 导入预览（只读，不落库、不建批次） */
+export interface ImportPreview {
+  bizType: string
+  semesterId?: number
+  totalRows: number
+  okRows: number
+  errorRows: number
+  errorSamples?: { row?: number; message?: string }[]
+  /** 本次将新建的账号数 */
+  newUserCount: number
+  /** 是否执行了「不在名单内即停用」的比对（仅目标学期 = active 学期时为真） */
+  disableComparisonApplies: boolean
+  /** 比对将停用的账号数 */
+  disableEstimate: number
+  classSizeDiffs: ClassSizeDiff[]
+  requiresConfirm: boolean
+  shrinkConfirmPct: number
+  shrinkConfirmMinDrop: number
+}
+
 /* ---------------- 异动申请 ---------------- */
 export type ChangeStatus = 'pending_field_check' | 'pending_review' | 'approved' | 'rejected'
 

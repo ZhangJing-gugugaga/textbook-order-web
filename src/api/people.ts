@@ -1,5 +1,5 @@
 import { http, downloadBlob } from './http'
-import type { Account, ImportBatch, PageResult } from '@/types'
+import type { Account, ImportBatch, ImportPreview, PageResult } from '@/types'
 
 export interface AccountQuery {
   roleCode?: string
@@ -28,11 +28,32 @@ export const accountsApi = {
     http.put<void>(`/admin/user/${id}/status`, undefined, { params: { status } }),
   /** 重置为初始密码 + 强制改密 */
   resetPassword: (id: number) => http.put<void>(`/admin/user/${id}/reset-password`),
-  /** 名单导入（?role=student|teacher&semesterId=） */
-  importExcel: (file: File, role: 'student' | 'teacher', semesterId?: number) => {
+  /**
+   * 名单导入（?role=student|teacher&semesterId=）。
+   *
+   * `confirmClassSizeShrink`（局部名单门禁，B13）：学生名单会按文件内人数重算班级人数
+   * （= 教师填报数量上限），下调比例超阈值时后端 409，必须带 true 重提（前端先预览再确认）。
+   */
+  importExcel: (
+    file: File,
+    role: 'student' | 'teacher',
+    semesterId?: number,
+    confirmClassSizeShrink = false,
+  ) => {
     const formData = new FormData()
     formData.append('file', file)
     return http.post<{ batchId: number }>('/admin/user/import', formData, {
+      params: { role, semesterId, confirmClassSizeShrink },
+    })
+  },
+  /**
+   * 导入预览（只读，不落库不建批次）：班级人数 diff / 将新建账号数 / 将停用账号数 / 错误行样例。
+   * 供导入前的「强确认」弹窗使用（B13）。
+   */
+  previewImport: (file: File, role: 'student' | 'teacher', semesterId?: number) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return http.post<ImportPreview>('/admin/user/import/preview', formData, {
       params: { role, semesterId },
     })
   },

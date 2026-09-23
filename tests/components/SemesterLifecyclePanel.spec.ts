@@ -20,6 +20,7 @@ vi.mock('@/api/semester', () => ({
     setWindow: vi.fn(),
     activate: vi.fn(),
     archive: vi.fn(),
+    unarchive: vi.fn(),
     openWindow: vi.fn(),
     closeWindow: vi.fn(),
     extendWindow: vi.fn(),
@@ -137,6 +138,41 @@ describe('SemesterLifecyclePanel 学期生命周期', () => {
     expect(labels).toContain('提前截止')
     expect(labels).toContain('延长')
     expect(labels).toContain('归档')
+    wrapper.unmount()
+  })
+
+  it('归档带二次门禁参数（B11）：窗口进行中传 version + confirmWindowOpen=true', async () => {
+    const wrapper = mountPanel({
+      ...draft,
+      activeStatus: 'active',
+      windowStatus: 'open',
+      channelOpen: 1,
+      version: 3,
+    })
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+
+    const archiveButton = wrapper.findAll('button').find((b) => b.text() === '归档')
+    await archiveButton!.trigger('click')
+    // 空 body 归档曾导致线上一次调用即停摆业务：前端必须回传 version 与显式确认标记
+    await vi.waitFor(() => expect(semesterApi.archive).toHaveBeenCalledWith(2, 3, true))
+    await vi.waitFor(() => expect(wrapper.emitted('changed')).toBeTruthy())
+
+    confirmSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('archived 学期提供撤销归档入口（B15）：带 version 调用 unarchive', async () => {
+    const wrapper = mountPanel({ ...draft, activeStatus: 'archived', version: 4 })
+    const labels = wrapper.findAll('button').map((b) => b.text())
+    expect(labels).toContain('撤销归档')
+    expect(labels).not.toContain('归档')
+
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    const unarchiveButton = wrapper.findAll('button').find((b) => b.text() === '撤销归档')
+    await unarchiveButton!.trigger('click')
+    await vi.waitFor(() => expect(semesterApi.unarchive).toHaveBeenCalledWith(2, 4))
+
+    confirmSpy.mockRestore()
     wrapper.unmount()
   })
 
