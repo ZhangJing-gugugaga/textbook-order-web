@@ -267,7 +267,7 @@ export interface ImportPreview {
 }
 
 /* ---------------- 异动申请 ---------------- */
-export type ChangeStatus = 'pending_field_check' | 'pending_review' | 'approved' | 'rejected'
+export type ChangeStatus = 'pending_review' | 'approved' | 'rejected'
 
 export type ChangeType = 'student' | 'teacher'
 
@@ -324,8 +324,7 @@ export interface ChangeRequestListItem {
 }
 
 /* ---------------- 教师填报（两级审查） ---------------- */
-export type OrderFormStatus =
-  'draft' | 'pending_review' | 'reviewed' | 'rejected' | 'rejected_auto' | 'submitted'
+export type OrderFormStatus = 'draft' | 'pending_review' | 'reviewed' | 'rejected' | 'rejected_auto'
 
 /** OrderFormItemVO */
 export interface OrderFormItem {
@@ -354,6 +353,12 @@ export interface OrderForm {
   reviewNote?: string
   /** 补正截止时间（被驳回后下发） */
   correctDeadline?: string
+  /**
+   * 最近一次主动撤回时间（BE-4）。
+   * 教师把 pending_review 撤回为 draft 后落此值；前端据此在草稿态提示
+   * 「已于 … 撤回，修改后请重新提交」，以区分「从未提交」与「撤回后待重提」。
+   */
+  withdrawnAt?: string | null
   /**
    * 内容版本号（每次提交整单覆盖即自增）。
    * 审核接口以它做 CAS：审核页把读到的值原样回传，服务端比对不一致即 409，

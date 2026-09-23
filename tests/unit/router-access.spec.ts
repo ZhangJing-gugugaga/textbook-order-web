@@ -114,9 +114,10 @@ describe('回归（2026-09-22 线上缺陷）：超管的侧边栏不得出现�
     '征订数据',
     '导出中心',
     '通知管理',
+    '审计日志',
   ]
 
-  it('超管（真实后端权限集）只看到教材室管理台菜单，共 11 项', () => {
+  it('超管（真实后端权限集）只看到教材室管理台菜单，共 12 项', () => {
     const titles = visibleMenuTitles(ADMIN_PERMISSIONS, ['ADMIN'])
     expect(titles).toEqual(ADMIN_ONLY_TITLES)
   })

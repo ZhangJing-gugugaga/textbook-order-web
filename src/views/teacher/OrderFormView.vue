@@ -78,6 +78,49 @@ const isLockedByReview = computed(
   () => form.value?.status === 'pending_review' || form.value?.status === 'reviewed',
 )
 
+const withdrawing = ref(false)
+
+/**
+ * 可撤回（决策 D1 口径）：待审核 **且** 窗口开放期。
+ * 关窗后不显示撤回按钮——撤回会得到 409 WINDOW_CLOSED（后端 `@WithinWindow`），
+ * 且撤回后无法重提会把表单变成死草稿。
+ */
+const canWithdraw = computed(() => form.value?.status === 'pending_review' && canFill.value)
+
+/** 撤回后提示：区分「从未提交的草稿」与「撤回后待重提」 */
+const withdrawnHint = computed(() =>
+  form.value?.status === 'draft' && form.value.withdrawnAt
+    ? `已于 ${formatDateTime(form.value.withdrawnAt)} 撤回，修改后请重新提交。`
+    : '',
+)
+
+/**
+ * 主动撤回：待审核期间表单只读（禁止无留痕覆盖），要改必须先撤回。
+ * 撤回后回到 draft，明细保留（教师从当前内容继续改），可编辑重提。
+ */
+async function confirmWithdraw() {
+  try {
+    await ElMessageBox.confirm(
+      '撤回后表单回到可编辑状态，需重新提交才进入审核；审核老师若已打开旧内容，其审核将被拒绝。',
+      '确认撤回本次填报？',
+      { type: 'warning', confirmButtonText: '撤回修改', cancelButtonText: '再想想' },
+    )
+  } catch {
+    return
+  }
+  withdrawing.value = true
+  try {
+    await orderFormApi.withdraw()
+    ElMessage.success('已撤回，可修改后重新提交')
+    await load()
+  } catch (error) {
+    // 409 时后端 message 已含分档文案（窗口已关闭 / 已通过审核…），直接展示
+    ElMessage.error((error as Error)?.message || '撤回失败，请重试')
+  } finally {
+    withdrawing.value = false
+  }
+}
+
 function rowKey(courseId: number, classId: number, textbookId: number) {
   return `${courseId}:${classId}:${textbookId}`
 }
@@ -255,8 +298,19 @@ onMounted(() => {
       type="warning"
       :closable="false"
       show-icon
-      title="已提交，等待复核（超管内容审核中，暂不可修改）"
-    />
+      title="已提交，等待教材室审核。审核前如需修改，请先撤回。"
+    >
+      <el-button
+        v-if="canWithdraw"
+        type="warning"
+        plain
+        :loading="withdrawing"
+        @click="confirmWithdraw"
+      >
+        撤回修改
+      </el-button>
+      <span v-else class="text-muted">窗口已关闭，如需修改请联系教材室。</span>
+    </el-alert>
     <el-alert
       v-else-if="form?.status === 'reviewed'"
       class="mb-16"
@@ -268,6 +322,14 @@ onMounted(() => {
       已通过审核的表单是终态：后端会拒绝再次提交（409）。如内容确需调整，
       请联系教材室按线下流程处理。
     </el-alert>
+    <el-alert
+      v-else-if="withdrawnHint"
+      class="mb-16"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="withdrawnHint"
+    />
 
     <FieldCheckResult
       v-if="fieldIssues.length"

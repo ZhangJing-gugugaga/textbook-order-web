@@ -58,6 +58,7 @@ const ALL_PAGES = [
   'order-data',
   'export-center',
   'notices',
+  'audit',
   'college-records',
   'college-export',
   'window-status',
@@ -89,6 +90,7 @@ const ALLOWED_PAGES: Record<string, string[]> = {
     'order-data',
     'export-center',
     'notices',
+    'audit',
   ],
   SECRETARY: ['profile', 'college-records', 'college-export', 'window-status', 'change-requests'],
   TEACHER: ['profile', 'change-requests', 'my-courses', 'order-form', 'my-submissions'],
@@ -247,7 +249,67 @@ test.describe('真实后端走查：五角色落地页与菜单（无桩）', ()
   })
 
   /**
-   * 全角色 × 全页面矩阵（23 页面 × 5 角色）。
+   * 回归（决策 FE-W1，线上实测 2026-09-23 缺陷）：教师/秘书点「明细」被 403 弹到 /403 页。
+   *
+   * 根因是两者都复用了 `/admin/order-forms/{id}`（要求 `order:form:view:all`，教师/秘书
+   * 都不持有）→ 必然 403 → 全局 onForbidden 跳 /403。修复后教师走
+   * `/teacher/order-forms/{id}`、秘书走 `/secretary/order-forms/{id}`。
+   *
+   * 这两条用例只读（打开弹窗看明细），不改任何业务数据。
+   */
+  test('回归 FE-W1：教师「明细与轨迹」正常出弹窗，不再被弹到 /403', async ({ page }) => {
+    await realLogin(page, 'TEACHER')
+    await page.goto('./my-submissions')
+    await expect(page.locator('.el-table__row').first()).toBeVisible({ timeout: 15_000 })
+
+    await page.getByRole('button', { name: '明细与轨迹' }).first().click()
+
+    // 弹窗出现即说明详情接口通了；若仍走旧端点会 403 并被弹到 /403 页
+    await expect(page.getByText('提交明细与审查轨迹')).toBeVisible({ timeout: 15_000 })
+    await expect(page).not.toHaveURL(/\/403$/)
+  })
+
+  test('回归 FE-W1：秘书「查看明细」正常出弹窗，不再被弹到 /403', async ({ page }) => {
+    await realLogin(page, 'SECRETARY')
+    await page.goto('./college-records')
+    await expect(page.locator('.el-table__row').first()).toBeVisible({ timeout: 15_000 })
+
+    await page.getByRole('button', { name: '查看明细' }).first().click()
+
+    await expect(page.getByText('表单明细（只读）')).toBeVisible({ timeout: 15_000 })
+    await expect(page).not.toHaveURL(/\/403$/)
+  })
+
+  /**
+   * FE-W3 撤回入口的**只读**回归：种子库里教师 700101 的单已通过审核（终态），
+   * 该状态下不得出现「撤回修改」按钮。
+   *
+   * 完整的「提交→撤回→重提→管理员 409」链路需要一张 pending_review 的单，
+   * 属写操作，未纳入本套只读走查（见测试报告「未覆盖项」）。
+   */
+  test('FE-W3：已通过审核的单不显示「撤回修改」（终态无撤回入口）', async ({ page }) => {
+    await realLogin(page, 'TEACHER')
+    await page.goto('./my-submissions')
+    await expect(page.locator('.el-table__row').first()).toBeVisible({ timeout: 15_000 })
+
+    // 种子库教师 700101 的表单状态为 reviewed（终态）
+    await expect(page.getByText('已通过').first()).toBeVisible()
+    await expect(page.getByRole('button', { name: '撤回修改' })).toHaveCount(0)
+  })
+
+  /** FE-W7 审计日志页：渲染真实审计数据（该接口此前已存在但全仓无消费页面） */
+  test('FE-W7：审计日志页渲染真实审计记录', async ({ page }) => {
+    await realLogin(page, 'ADMIN')
+    await page.goto('./audit')
+    await expect(page).toHaveURL(/\/audit$/)
+
+    // 种子库有登录/审核等审计记录；等首屏落地后行数应 > 0
+    await expect(page.locator('.el-table__row').first()).toBeVisible({ timeout: 15_000 })
+    expect(await page.locator('.el-table__row').count()).toBeGreaterThan(0)
+  })
+
+  /**
+   * 全角色 × 全页面矩阵（24 页面 × 5 角色）。
    *
    * 断言每个页面在「有权角色」下正常渲染（不出现错误态），在「无权角色」下落 403。
    * 2026-09-22 用同款矩阵发现过一处「菜单能点、进去被拦」的缺陷（秘书进导出中心
@@ -256,7 +318,7 @@ test.describe('真实后端走查：五角色落地页与菜单（无桩）', ()
    * 期望矩阵显式列出（不靠菜单反推）：`profile` 全员可用，其余按角色归属。
    */
   test('全角色 × 全页面矩阵：有权页面正常渲染、无权页面落 403', async ({ browser }) => {
-    // 115 次页面加载（23 页 × 5 角色），远超默认 30s 用例超时
+    // 120 次页面加载（24 页 × 5 角色），远超默认 30s 用例超时
     test.setTimeout(600_000)
     const baseURL = test.info().project.use.baseURL as string
 

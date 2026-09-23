@@ -49,7 +49,7 @@ async function openDetail(row: OrderFormListItem) {
   detailLoading.value = true
   detail.value = null
   try {
-    const result = await reviewApi.detail(row.id)
+    const result = await reviewApi.collegeDetail(row.id)
     if (current !== detailRequestId) return
     detail.value = result
   } catch (error) {

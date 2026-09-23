@@ -238,7 +238,6 @@ onMounted(async () => {
         <div class="app-toolbar">
           <el-select v-model="status" clearable placeholder="全部状态" style="width: 170px">
             <el-option label="待审批" value="pending_review" />
-            <el-option label="字段审查中" value="pending_field_check" />
             <el-option label="已通过" value="approved" />
             <el-option label="已驳回" value="rejected" />
           </el-select>

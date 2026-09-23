@@ -351,7 +351,6 @@ async function uploadPeopleFile(file: File) {
             @change="searchChanges"
           >
             <el-option label="待审批" value="pending_review" />
-            <el-option label="字段审查中" value="pending_field_check" />
             <el-option label="已通过" value="approved" />
             <el-option label="已驳回" value="rejected" />
           </el-select>

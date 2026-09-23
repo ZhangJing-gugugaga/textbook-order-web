@@ -184,6 +184,17 @@ export const routes: RouteRecordRaw[] = [
           group: '教材室',
         },
       },
+      {
+        path: 'audit',
+        name: 'audit',
+        component: () => import('@/views/admin/AuditView.vue'),
+        meta: {
+          title: '审计日志',
+          icon: 'Document',
+          permission: 'audit:log:view',
+          group: '教材室',
+        },
+      },
       /* ---------------- 学院秘书 ---------------- */
       {
         path: 'college-records',

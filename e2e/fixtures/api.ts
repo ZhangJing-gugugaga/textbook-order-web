@@ -115,6 +115,7 @@ export const MENU_BY_ROLE: Record<RoleCode, string[]> = {
     '征订数据',
     '导出中心',
     '通知管理',
+    '审计日志',
   ],
   // 导出中心归属超管（SPEC §4）：秘书虽有 export:order:create，但该页会无条件拉取
   // 学院列表/通知任务/全院表单等超管专属数据，秘书进入会吃 403 被全局处理弹到 /403 页

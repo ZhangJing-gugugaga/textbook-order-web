@@ -189,14 +189,18 @@ export const ROLE_LABELS: Record<string, string> = {
   SUPPLIER: '教材供货商',
 }
 
-/** 教师征订单状态（后端 §1.7） */
+/**
+ * 教师征订单状态（后端 §1.7）。
+ * `draft` 现在是真的会出现：教师「撤回修改」（BE-4）会把 pending_review 打回 draft。
+ * 此前的 `submitted` 是死值（后端从不产出），已移除——留着会出现在筛选下拉里，
+ * 选了永远查不到数据。
+ */
 export const ORDER_FORM_STATUS = {
   draft: '草稿',
   pending_review: '待审核',
   reviewed: '已通过',
   rejected: '已驳回',
   rejected_auto: '字段审查未过',
-  submitted: '已提交',
 } as const
 
 /** 学生选购单状态 */
@@ -205,9 +209,11 @@ export const STUDENT_ORDER_STATUS = {
   submitted: '已提交',
 } as const
 
-/** 异动状态 */
+/**
+ * 异动状态。
+ * 此前的 `pending_field_check` 是死值（异动不走字段审查机，后端从不产出），已移除。
+ */
 export const CHANGE_STATUS = {
-  pending_field_check: '字段审查中',
   pending_review: '待审批',
   approved: '已通过',
   rejected: '已驳回',
@@ -231,7 +237,6 @@ export const ORDER_FORM_STATUS_META: Record<string, StatusMeta> = {
   reviewed: { label: ORDER_FORM_STATUS.reviewed, type: 'success' },
   rejected: { label: ORDER_FORM_STATUS.rejected, type: 'danger' },
   rejected_auto: { label: ORDER_FORM_STATUS.rejected_auto, type: 'danger' },
-  submitted: { label: ORDER_FORM_STATUS.submitted, type: 'info' },
 }
 
 export const STUDENT_ORDER_STATUS_META: Record<string, StatusMeta> = {
@@ -240,10 +245,32 @@ export const STUDENT_ORDER_STATUS_META: Record<string, StatusMeta> = {
 }
 
 export const CHANGE_STATUS_META: Record<string, StatusMeta> = {
-  pending_field_check: { label: CHANGE_STATUS.pending_field_check, type: 'info' },
   pending_review: { label: CHANGE_STATUS.pending_review, type: 'warning' },
   approved: { label: CHANGE_STATUS.approved, type: 'success' },
   rejected: { label: CHANGE_STATUS.rejected, type: 'danger' },
+}
+
+/**
+ * 审计日志动作令牌（`audit_log.action`）。
+ *
+ * 与后端 `AuditService` 的常量**一一对应**（13 个），是筛选下拉的唯一来源——
+ * 页面内不再各写一份，避免后端新增动作后前端筛不到。
+ * 键即后端存的值（英文令牌），值是给人看的中文。
+ */
+export const AUDIT_ACTIONS: Record<string, string> = {
+  LOGIN: '登录',
+  LOGOUT: '登出',
+  EXPORT: '导出',
+  ACCOUNT: '账号变更',
+  WINDOW: '窗口操作',
+  SEMESTER_SWITCH: '学期切换',
+  REVIEW: '内容审核',
+  CHANGE: '学籍异动',
+  CONFIG: '系统配置',
+  IMPORT: '名单导入',
+  NOTICE: '通知任务',
+  ROLE: '角色/权限变更',
+  WITHDRAW: '教师撤回',
 }
 
 /** 通知来源（通知管理页与全局阻塞弹窗共用） */
